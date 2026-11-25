@@ -17,6 +17,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <queries>
+        <package android:name="com.aistudio.hotspotbam.kxmpzq" />
+    </queries>
+
     <application
         android:name=".AmmarApplication"
         android:allowBackup="true"

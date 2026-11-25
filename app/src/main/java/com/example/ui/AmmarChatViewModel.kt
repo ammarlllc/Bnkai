@@ -327,7 +327,8 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun openHotspotNodeApp() {
         val ctx = getApplication<Application>()
-        val intent = Intent(ctx, HotspotNodeActivity::class.java).apply {
+        val externalIntent = ctx.packageManager.getLaunchIntentForPackage("com.aistudio.hotspotbam.kxmpzq")
+        val intent = (externalIntent ?: Intent(ctx, HotspotNodeActivity::class.java)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         ctx.startActivity(intent)

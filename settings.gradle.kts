@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "Ammar Chat"
 
 include(":app")
+include(":hotspotbam")

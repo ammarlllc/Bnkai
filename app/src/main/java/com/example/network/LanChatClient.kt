@@ -68,11 +68,9 @@ class LanChatClient(
         connectionLoopJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 currentHelloUserJson = helloUserProvider()
-                val localNodeOn = HotspotNodeRuntime.state.value.isNodeActive ||
-                    runCatching { prefs.hotspotNodeActiveFlow.first() }.getOrDefault(false)
 
                 val candidateIps = buildList {
-                    if (localNodeOn) add("127.0.0.1")
+                    add("127.0.0.1")
                     discoveredHostIp?.let { add(it) }
                     // Common Android Wi-Fi Hotspot / Wi-Fi Direct gateway IPs
                     add("192.168.43.1")
@@ -82,7 +80,6 @@ class LanChatClient(
                 if (activeSocket == null || activeSocket?.isClosed == true) {
                     var connected = false
                     for (ip in candidateIps) {
-                        if (ip == "127.0.0.1" && !localNodeOn) continue
                         if (tryConnect(ip)) {
                             connected = true
                             break
@@ -97,13 +94,7 @@ class LanChatClient(
                         )
                     }
                 } else {
-                    // Check if local node was turned off while connected via loopback
-                    val sockIp = activeSocket?.inetAddress?.hostAddress
-                    if ((sockIp == "127.0.0.1" || sockIp == "localhost") && !HotspotNodeRuntime.state.value.isNodeActive) {
-                        disconnectSocket()
-                    } else {
-                        sendPacket(LanProtocol.packet(LanProtocol.TYPE_PING))
-                    }
+                    sendPacket(LanProtocol.packet(LanProtocol.TYPE_PING))
                 }
                 delay(1800)
             }
