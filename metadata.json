@@ -1,0 +1,6 @@
+{
+  "name": "Ammar Chat",
+  "description": "Offline LAN real-time messenger and 5GHz device hotspot node controller",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
