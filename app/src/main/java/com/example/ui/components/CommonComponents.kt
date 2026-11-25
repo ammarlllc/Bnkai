@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +24,8 @@ import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -32,10 +33,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -49,6 +53,7 @@ import coil.compose.AsyncImage
 import com.example.audio.VoicePlaybackState
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageStatus
+import com.example.data.local.TickBadgeType
 import com.example.ui.theme.ChatBackgroundTheme
 import com.example.ui.theme.EmeraldSignal
 import com.example.ui.theme.ObsidianBg
@@ -56,6 +61,8 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.VerifiedBlue
+import com.example.ui.theme.VerifiedGreen
+import com.example.ui.theme.VerifiedRed
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -63,20 +70,55 @@ import java.util.Locale
 import kotlin.math.abs
 
 @Composable
-fun VerifiedBlueTick(
-    modifier: Modifier = Modifier,
-    size: Dp = 17.dp
+fun UserBadgeView(
+    badgeType: TickBadgeType,
+    stickerVideoPath: String? = null,
+    size: Dp = 17.dp,
+    modifier: Modifier = Modifier
+) {
+    when (badgeType) {
+        TickBadgeType.NONE -> Unit
+        TickBadgeType.VIDEO_STICKER -> {
+            val file = stickerVideoPath?.let { File(it) }?.takeIf { it.exists() }
+            if (file != null) {
+                Box(
+                    modifier = modifier
+                        .size(size + 4.dp)
+                        .clip(CircleShape)
+                        .border(1.2.dp, VerifiedBlue, CircleShape)
+                ) {
+                    LoopingVideoBox(
+                        videoPath = file.absolutePath,
+                        muted = true,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            } else {
+                TickCircle(color = VerifiedBlue, size = size, modifier = modifier)
+            }
+        }
+        TickBadgeType.BLUE -> TickCircle(color = VerifiedBlue, size = size, modifier = modifier)
+        TickBadgeType.GREEN -> TickCircle(color = VerifiedGreen, size = size, modifier = modifier)
+        TickBadgeType.RED -> TickCircle(color = VerifiedRed, size = size, modifier = modifier)
+    }
+}
+
+@Composable
+private fun TickCircle(
+    color: Color,
+    size: Dp,
+    modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
             .size(size)
             .clip(CircleShape)
-            .background(VerifiedBlue),
+            .background(color),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = Icons.Rounded.Check,
-            contentDescription = "Verified account",
+            contentDescription = "Verified badge",
             tint = Color.White,
             modifier = Modifier.size(size * 0.68f)
         )
@@ -90,6 +132,7 @@ fun UserAvatar(
     size: Dp = 48.dp,
     isOnline: Boolean = false,
     isGroup: Boolean = false,
+    videoAvatarPath: String? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = listOf(
@@ -109,39 +152,58 @@ fun UserAvatar(
         .ifEmpty { "?" }
 
     Box(modifier = modifier.size(size)) {
-        val file = avatarPath?.let { File(it) }
-        if (file != null && file.exists()) {
-            AsyncImage(
-                model = file,
-                contentDescription = "$displayName avatar",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .background(Brush.linearGradient(listOf(pair.first, pair.second))),
-                contentAlignment = Alignment.Center
-            ) {
-                if (isGroup) {
-                    Icon(
-                        imageVector = Icons.Rounded.Groups,
-                        contentDescription = "$displayName group icon",
-                        tint = Color.White,
-                        modifier = Modifier.size(size * 0.54f)
+        val videoFile = videoAvatarPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+        val photoFile = avatarPath?.let { File(it) }?.takeIf { it.exists() && it.length() > 0L }
+
+        when {
+            videoFile != null && !isGroup -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .border(1.5.dp, Color.White.copy(alpha = 0.25f), CircleShape)
+                ) {
+                    LoopingVideoBox(
+                        videoPath = videoFile.absolutePath,
+                        muted = true,
+                        modifier = Modifier.fillMaxSize()
                     )
-                } else {
-                    Text(
-                        text = initials,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = (size.value * 0.36f).sp
-                    )
+                }
+            }
+            photoFile != null -> {
+                AsyncImage(
+                    model = photoFile,
+                    contentDescription = "$displayName avatar",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+                )
+            }
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(Brush.linearGradient(listOf(pair.first, pair.second))),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isGroup) {
+                        Icon(
+                            imageVector = Icons.Rounded.Groups,
+                            contentDescription = "$displayName group icon",
+                            tint = Color.White,
+                            modifier = Modifier.size(size * 0.54f)
+                        )
+                    } else {
+                        Text(
+                            text = initials,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = (size.value * 0.36f).sp
+                        )
+                    }
                 }
             }
         }
@@ -185,6 +247,78 @@ fun MessageStatusTicks(
             tint = TextMuted,
             modifier = modifier.size(15.dp)
         )
+    }
+}
+
+@Composable
+fun VideoEmojiBubble(
+    msg: MessageEntity,
+    isMine: Boolean,
+    theme: ChatBackgroundTheme
+) {
+    var muted by remember { mutableStateOf(true) }
+    Column(modifier = Modifier.widthIn(min = 148.dp, max = 188.dp)) {
+        Box(
+            modifier = Modifier
+                .size(156.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.Black.copy(alpha = 0.35f))
+                .border(1.5.dp, theme.accent.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                .clickable { muted = !muted }
+                .testTag("video_emoji_${msg.msgId}")
+        ) {
+            LoopingVideoBox(
+                videoPath = msg.videoPath,
+                muted = muted,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (muted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                    contentDescription = if (muted) "Unmute video emoji" else "Mute video emoji",
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color.Black.copy(alpha = 0.55f),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp)
+            ) {
+                Text(
+                    text = "3s Emoji",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatClockTime(msg.timestamp),
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
+            )
+            if (isMine) {
+                Spacer(Modifier.width(4.dp))
+                MessageStatusTicks(status = msg.status)
+            }
+        }
     }
 }
 
@@ -354,41 +488,6 @@ fun GroupInviteBubble(
     }
 }
 
-@Composable
-fun ThemedChatBackground(
-    theme: ChatBackgroundTheme,
-    modifier: Modifier = Modifier
-) {
-    Canvas(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(theme.bgTop, theme.bgBottom)))
-    ) {
-        val step = 64.dp.toPx()
-        val dotColor = theme.patternColor.copy(alpha = 0.06f)
-        val lineColor = theme.patternColor.copy(alpha = 0.035f)
-        var y = 0f
-        var row = 0
-        while (y < size.height + step) {
-            var x = if (row % 2 == 0) 0f else step / 2f
-            while (x < size.width + step) {
-                drawCircle(color = dotColor, radius = 2.5.dp.toPx(), center = Offset(x, y))
-                if (row % 3 == 0) {
-                    drawLine(
-                        color = lineColor,
-                        start = Offset(x, y),
-                        end = Offset(x + step * 0.5f, y + step),
-                        strokeWidth = 1.dp.toPx()
-                    )
-                }
-                x += step
-            }
-            y += step
-            row++
-        }
-    }
-}
-
 fun formatClockTime(ts: Long): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
 
@@ -397,4 +496,20 @@ fun formatDuration(ms: Long): String {
     val min = totalSec / 60L
     val sec = totalSec % 60L
     return String.format(Locale.getDefault(), "%02d:%02d", min, sec)
+}
+
+fun formatBanRemaining(expiresAt: Long): String {
+    if (expiresAt <= 0L) return "Permanent Ban"
+    val diff = expiresAt - System.currentTimeMillis()
+    if (diff <= 0L) return "Expiring now"
+    val mins = diff / 60_000L
+    val hours = mins / 60L
+    val days = hours / 24L
+    val years = days / 365L
+    return when {
+        years >= 1 -> "${years}y ${days % 365}d remaining"
+        days >= 1 -> "${days}d ${hours % 24}h remaining"
+        hours >= 1 -> "${hours}h ${mins % 60}m remaining"
+        else -> "${mins.coerceAtLeast(1)}m remaining"
+    }
 }

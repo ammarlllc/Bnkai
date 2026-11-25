@@ -13,6 +13,7 @@ import com.example.data.local.GroupEntity
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageType
 import com.example.data.local.PresenceState
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
 import com.example.data.repo.ChatRepository
 import com.example.data.repo.PresenceIndicator
@@ -36,7 +37,9 @@ data class ChatThreadSummary(
     val title: String,
     val subtitleUsername: String,
     val avatarPath: String?,
-    val hasBlueTick: Boolean,
+    val videoAvatarPath: String?,
+    val badgeType: TickBadgeType,
+    val stickerVideoPath: String?,
     val isOnline: Boolean,
     val lastMessage: MessageEntity?,
     val unreadCount: Int,
@@ -49,6 +52,7 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
     val currentUser: StateFlow<UserEntity?> = repo.currentUser
     val connectionState: StateFlow<LanConnectionState> = repo.connectionState
     val activeTheme: StateFlow<ChatBackgroundTheme> = repo.activeTheme
+    val customThemeImagePath: StateFlow<String?> = repo.customThemeImagePath
     val allUsers: StateFlow<List<UserEntity>> = repo.allUsers
     val allGroups: StateFlow<List<GroupEntity>> = repo.allGroups
     val presenceMap: StateFlow<Map<String, PresenceIndicator>> = repo.presenceMap
@@ -74,7 +78,7 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
 
         val list = mutableListOf<ChatThreadSummary>()
 
-        // 1. Groups user belongs to
+        // Groups user belongs to (or App Owner can inspect any group they are in)
         groups.filter { me.userId in it.memberIds() }.forEach { grp ->
             val cid = ChatRepository.groupChatId(grp.groupId)
             val chatMsgs = messages.filter { it.chatId == cid }
@@ -85,9 +89,11 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
                     isGroup = true,
                     targetId = grp.groupId,
                     title = grp.name,
-                    subtitleUsername = "${grp.memberIds().size} members",
+                    subtitleUsername = "${grp.memberIds().size} members • ${if (grp.isPublic) "Public" else "Private"}",
                     avatarPath = grp.avatarPath,
-                    hasBlueTick = false,
+                    videoAvatarPath = null,
+                    badgeType = TickBadgeType.NONE,
+                    stickerVideoPath = null,
                     isOnline = true,
                     lastMessage = chatMsgs.maxByOrNull { it.timestamp },
                     unreadCount = unread,
@@ -96,7 +102,6 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
             )
         }
 
-        // 2. Direct chats with peers who have messages or are active peers
         val peerIdsWithMsgs = messages
             .filter { !it.isGroup }
             .mapNotNull { msg ->
@@ -121,7 +126,9 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
                         title = peer.displayName,
                         subtitleUsername = "@${peer.username}",
                         avatarPath = peer.avatarPath,
-                        hasBlueTick = peer.hasBlueTick,
+                        videoAvatarPath = peer.videoAvatarPath,
+                        badgeType = peer.effectiveBadgeType(),
+                        stickerVideoPath = peer.stickerVideoPath,
                         isOnline = peer.isOnline,
                         lastMessage = chatMsgs.maxByOrNull { it.timestamp },
                         unreadCount = unread,
@@ -176,6 +183,31 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun setMyVideoAvatar(videoUri: Uri) {
+        viewModelScope.launch {
+            showToast("Processing video profile...")
+            repo.setMyVideoAvatar(videoUri)
+                .onSuccess { showToast("Video profile updated!") }
+                .onFailure { showToast(it.message ?: "Failed to set video profile") }
+        }
+    }
+
+    fun setOwnerBadgeAndSticker(badgeType: TickBadgeType, stickerVideoUri: Uri? = null) {
+        viewModelScope.launch {
+            repo.setOwnerBadgeAndSticker(badgeType, stickerVideoUri)
+                .onSuccess { showToast("Badge updated") }
+                .onFailure { showToast(it.message ?: "Failed to update badge") }
+        }
+    }
+
+    fun setUserBadgeByOwner(targetUserId: String, badgeType: TickBadgeType) {
+        viewModelScope.launch {
+            repo.setUserBadgeByOwner(targetUserId, badgeType)
+                .onSuccess { showToast("User badge set to ${badgeType.name}") }
+                .onFailure { showToast(it.message ?: "Failed to set badge") }
+        }
+    }
+
     fun setOpenChat(chatId: String?) {
         repo.setOpenChat(chatId)
     }
@@ -201,9 +233,18 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun sendVideoEmoji(chatId: String, isGroup: Boolean, recipientId: String, videoUri: Uri) {
+        viewModelScope.launch {
+            showToast("Preparing 3s Video Emoji...")
+            repo.sendVideoEmojiMessage(chatId, isGroup, recipientId, videoUri)
+                .onSuccess { showToast("Video Emoji sent") }
+                .onFailure { showToast(it.message ?: "Cannot send Video Emoji") }
+        }
+    }
+
     fun startVoiceRecording(chatId: String, isGroup: Boolean, recipientId: String) {
         if (!repo.isHotspotReadyForMessaging()) {
-            showToast("Hotspot is OFF. Turn on AMMAR-HACKER-5G in Ammar 5G Node.")
+            showToast("Hotspot is OFF. Turn on AMMAR-HACKER-5G in HOTSPOT BAM.")
             return
         }
         val started = repo.voiceManager.startRecording()
@@ -237,9 +278,9 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
         repo.voiceManager.togglePlay(msg.msgId, msg.audioPath, msg.durationMs)
     }
 
-    fun createGroup(name: String, avatarUri: Uri?, onCreated: (GroupEntity) -> Unit) {
+    fun createGroup(name: String, avatarUri: Uri?, isPublic: Boolean, onCreated: (GroupEntity) -> Unit) {
         viewModelScope.launch {
-            repo.createGroup(name, avatarUri)
+            repo.createGroup(name, avatarUri, isPublic)
                 .onSuccess {
                     showToast("Group \"${it.name}\" created")
                     onCreated(it)
@@ -256,9 +297,14 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun joinGroupByInvite(groupId: String, token: String, onJoined: (GroupEntity) -> Unit) {
+    fun joinGroupByInvite(
+        groupId: String,
+        token: String,
+        snapshotJson: String? = null,
+        onJoined: (GroupEntity) -> Unit
+    ) {
         viewModelScope.launch {
-            repo.joinGroupByInvite(groupId, token)
+            repo.joinGroupByInvite(groupId, token, snapshotJson)
                 .onSuccess {
                     showToast("Joined ${it.name}")
                     onJoined(it)
@@ -275,9 +321,52 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
             showToast("Invalid invite link format")
             return
         }
-        val groupId = match.groupValues[1]
-        val token = match.groupValues[2]
-        joinGroupByInvite(groupId, token, onJoined)
+        joinGroupByInvite(match.groupValues[1], match.groupValues[2], null, onJoined)
+    }
+
+    fun joinPublicGroup(groupId: String, onJoined: (GroupEntity) -> Unit) {
+        viewModelScope.launch {
+            repo.joinPublicGroup(groupId)
+                .onSuccess {
+                    showToast("Joined ${it.name}")
+                    onJoined(it)
+                }
+                .onFailure { showToast(it.message ?: "Could not join group") }
+        }
+    }
+
+    fun toggleGroupPrivacy(groupId: String) {
+        viewModelScope.launch {
+            repo.toggleGroupPrivacy(groupId)
+                .onSuccess { showToast(if (it.isPublic) "Group is now Public" else "Group is now Private") }
+                .onFailure { showToast(it.message ?: "Failed to change privacy") }
+        }
+    }
+
+    fun regenerateGroupInviteLink(groupId: String) {
+        viewModelScope.launch {
+            repo.regenerateGroupInviteLink(groupId)
+                .onSuccess { showToast("Invite link changed — old link invalidated") }
+                .onFailure { showToast(it.message ?: "Failed to reset link") }
+        }
+    }
+
+    fun muteGroupMember(groupId: String, targetUserId: String, durationMinutes: Long) {
+        viewModelScope.launch {
+            repo.muteGroupMember(groupId, targetUserId, durationMinutes)
+                .onSuccess {
+                    showToast(if (durationMinutes <= 0L) "Member unmuted" else "Member muted for ${durationMinutes}m")
+                }
+                .onFailure { showToast(it.message ?: "Failed to mute member") }
+        }
+    }
+
+    fun changeGroupOwner(groupId: String, newOwnerUserId: String) {
+        viewModelScope.launch {
+            repo.changeGroupOwner(groupId, newOwnerUserId)
+                .onSuccess { showToast("Group ownership transferred") }
+                .onFailure { showToast(it.message ?: "Cannot transfer ownership") }
+        }
     }
 
     fun buildInviteLink(group: GroupEntity): String = repo.buildInviteLink(group)
@@ -293,8 +382,8 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
     fun kickMember(groupId: String, targetUserId: String) {
         viewModelScope.launch {
             repo.kickMemberFromGroup(groupId, targetUserId)
-                .onSuccess { showToast("Member removed from group") }
-                .onFailure { showToast(it.message ?: "Cannot remove member") }
+                .onSuccess { showToast("Member kicked from group") }
+                .onFailure { showToast(it.message ?: "Cannot kick member") }
         }
     }
 
@@ -309,10 +398,12 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
     fun canManageGroup(user: UserEntity, group: GroupEntity): Boolean =
         repo.canManageGroup(user, group)
 
-    fun setUserBannedByOwner(targetUserId: String, banned: Boolean) {
+    fun banUserWithDuration(targetUserId: String, durationMs: Long) {
         viewModelScope.launch {
-            repo.setUserBannedByOwner(targetUserId, banned)
-                .onSuccess { showToast(if (banned) "Account banned" else "Account unbanned") }
+            repo.banUserWithDuration(targetUserId, durationMs)
+                .onSuccess {
+                    showToast(if (durationMs == 0L) "Account unbanned" else "Account banned")
+                }
                 .onFailure { showToast(it.message ?: "Action failed") }
         }
     }
@@ -322,6 +413,21 @@ class AmmarChatViewModel(application: Application) : AndroidViewModel(applicatio
             repo.setThemeByOwner(theme)
                 .onSuccess { showToast("Theme updated: ${theme.label}") }
                 .onFailure { showToast(it.message ?: "Action failed") }
+        }
+    }
+
+    fun setRandomThemeByOwner() {
+        val current = activeTheme.value
+        val candidates = ChatBackgroundTheme.animatedPresets.filter { it != current }
+        val picked = candidates.randomOrNull() ?: ChatBackgroundTheme.SPIDY
+        setThemeByOwner(picked)
+    }
+
+    fun setCustomGalleryThemeByOwner(imageUri: Uri) {
+        viewModelScope.launch {
+            repo.setCustomGalleryThemeByOwner(imageUri)
+                .onSuccess { showToast("Gallery theme applied") }
+                .onFailure { showToast(it.message ?: "Failed to apply gallery theme") }
         }
     }
 

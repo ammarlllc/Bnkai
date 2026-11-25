@@ -29,7 +29,12 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AddAPhoto
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PersonRemove
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -40,6 +45,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,9 +66,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.data.local.GroupEntity
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
+import com.example.ui.components.MuteMemberDialog
 import com.example.ui.components.UserAvatar
-import com.example.ui.components.VerifiedBlueTick
+import com.example.ui.components.UserBadgeView
+import com.example.ui.components.formatBanRemaining
+import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.ChatBackgroundTheme
 import com.example.ui.theme.CrimsonAlert
 import com.example.ui.theme.EmeraldSignal
@@ -76,10 +87,11 @@ import com.example.ui.theme.TextSecondary
 fun CreateGroupDialog(
     theme: ChatBackgroundTheme,
     onDismiss: () -> Unit,
-    onCreate: (name: String, avatarUri: Uri?) -> Unit
+    onCreate: (name: String, avatarUri: Uri?, isPublic: Boolean) -> Unit
 ) {
     var groupName by remember { mutableStateOf("") }
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    var isPublic by remember { mutableStateOf(true) }
     val picker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -131,11 +143,35 @@ fun CreateGroupDialog(
                         .fillMaxWidth()
                         .testTag("create_group_name_input")
                 )
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isPublic) "Public Group" else "Private Group",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = if (isPublic) "Visible in LAN Search" else "Invite link only",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                    Switch(
+                        checked = isPublic,
+                        onCheckedChange = { isPublic = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = EmeraldSignal)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = { onCreate(groupName, selectedUri) },
+                onClick = { onCreate(groupName, selectedUri, isPublic) },
                 colors = ButtonDefaults.buttonColors(containerColor = theme.accent, contentColor = Color(0xFF04101A)),
                 modifier = Modifier.testTag("confirm_create_group")
             ) {
@@ -205,11 +241,17 @@ fun GroupInfoScreen(
     theme: ChatBackgroundTheme,
     onBack: () -> Unit,
     onUpdateGroupDp: (Uri) -> Unit,
+    onTogglePrivacy: () -> Unit,
+    onRegenerateInviteLink: () -> Unit,
+    onMuteMember: (targetUserId: String, minutes: Long) -> Unit,
+    onChangeGroupOwner: (newOwnerUserId: String) -> Unit,
     onKickMember: (String) -> Unit,
     onToggleAdmin: (String) -> Unit,
     onCopiedLink: () -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
+    var muteTargetMember by remember { mutableStateOf<UserEntity?>(null) }
+
     val dpPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -224,6 +266,7 @@ fun GroupInfoScreen(
         )
     }
     val admins = group.adminIds().toSet()
+    val canTransferOwnership = currentUser.isOwner || currentUser.userId == group.creatorId
 
     Scaffold(
         containerColor = ObsidianBg,
@@ -293,6 +336,45 @@ fun GroupInfoScreen(
                 }
             }
 
+            if (canManage) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = ObsidianSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (group.isPublic) Icons.Rounded.Public else Icons.Rounded.Lock,
+                                contentDescription = null,
+                                tint = if (group.isPublic) EmeraldSignal else AmberWarn
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (group.isPublic) "Public Group" else "Private Group",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = if (group.isPublic) "Anyone on LAN can search & join" else "Invite link required to join",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Switch(
+                                checked = group.isPublic,
+                                onCheckedChange = { onTogglePrivacy() },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = EmeraldSignal)
+                            )
+                        }
+                    }
+                }
+            }
+
             item {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
@@ -308,6 +390,14 @@ fun GroupInfoScreen(
                             Spacer(Modifier.height(3.dp))
                             Text(inviteLink, style = MaterialTheme.typography.labelSmall, color = theme.accent)
                         }
+                        if (canManage) {
+                            IconButton(
+                                onClick = onRegenerateInviteLink,
+                                modifier = Modifier.testTag("reset_group_invite")
+                            ) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "Change invite link", tint = AmberWarn)
+                            }
+                        }
                         IconButton(
                             onClick = {
                                 clipboard.setText(AnnotatedString(inviteLink))
@@ -321,6 +411,21 @@ fun GroupInfoScreen(
                 }
             }
 
+            if (currentUser.isOwner && group.creatorId != currentUser.userId) {
+                item {
+                    Button(
+                        onClick = { onChangeGroupOwner(currentUser.userId) },
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.accent, contentColor = Color(0xFF04101A)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Rounded.Shield, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Claim Group Ownership (App Owner)", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
             item {
                 Text(
                     text = "MEMBERS (${members.size})",
@@ -330,7 +435,9 @@ fun GroupInfoScreen(
             }
 
             items(members, key = { it.userId }) { member ->
-                val isAdmin = member.userId in admins || member.userId == group.creatorId
+                val isGroupOwner = member.userId == group.creatorId
+                val isAdmin = member.userId in admins || isGroupOwner
+                val mutedExp = group.mutedUntil(member.userId)
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = ObsidianSurface,
@@ -344,15 +451,21 @@ fun GroupInfoScreen(
                             avatarPath = member.avatarPath,
                             displayName = member.displayName,
                             size = 44.dp,
-                            isOnline = member.isOnline
+                            isOnline = member.isOnline,
+                            videoAvatarPath = member.videoAvatarPath
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(member.displayName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                                if (member.hasBlueTick) {
+                                val badge = member.effectiveBadgeType()
+                                if (badge != TickBadgeType.NONE) {
                                     Spacer(Modifier.width(5.dp))
-                                    VerifiedBlueTick(size = 14.dp)
+                                    UserBadgeView(
+                                        badgeType = badge,
+                                        stickerVideoPath = member.stickerVideoPath,
+                                        size = 14.dp
+                                    )
                                 }
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -360,15 +473,38 @@ fun GroupInfoScreen(
                                 if (isAdmin) {
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        text = if (member.userId == group.creatorId) "Creator" else "Admin",
+                                        text = if (isGroupOwner) "Group Owner" else "Admin",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = EmeraldSignal
                                     )
                                 }
                             }
+                            if (mutedExp > 0L) {
+                                Text(
+                                    text = "Muted • ${formatBanRemaining(mutedExp)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = AmberWarn
+                                )
+                            }
                         }
 
-                        if (canManage && member.userId != currentUser.userId && member.userId != group.creatorId) {
+                        if (canManage && member.userId != currentUser.userId && (!isGroupOwner || currentUser.isOwner)) {
+                            IconButton(onClick = { muteTargetMember = member }) {
+                                Icon(
+                                    Icons.Rounded.VolumeOff,
+                                    contentDescription = "Mute member",
+                                    tint = if (mutedExp > 0L) AmberWarn else TextSecondary
+                                )
+                            }
+                            if (canTransferOwnership && !isGroupOwner) {
+                                IconButton(onClick = { onChangeGroupOwner(member.userId) }) {
+                                    Icon(
+                                        Icons.Rounded.Shield,
+                                        contentDescription = "Make Group Owner",
+                                        tint = theme.accent
+                                    )
+                                }
+                            }
                             IconButton(onClick = { onToggleAdmin(member.userId) }) {
                                 Icon(
                                     Icons.Rounded.AdminPanelSettings,
@@ -391,5 +527,14 @@ fun GroupInfoScreen(
                 }
             }
         }
+    }
+
+    muteTargetMember?.let { target ->
+        MuteMemberDialog(
+            member = target,
+            theme = theme,
+            onDismiss = { muteTargetMember = null },
+            onMuteMinutes = { mins -> onMuteMember(target.userId, mins) }
+        )
     }
 }

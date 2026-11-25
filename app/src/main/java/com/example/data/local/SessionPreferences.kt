@@ -17,6 +17,7 @@ class SessionPreferences(private val context: Context) {
     private object Keys {
         val CURRENT_USER_ID = stringPreferencesKey("current_user_id")
         val ACTIVE_THEME_ID = stringPreferencesKey("active_theme_id")
+        val CUSTOM_THEME_IMAGE_PATH = stringPreferencesKey("custom_theme_image_path")
         val HOTSPOT_NODE_ACTIVE = booleanPreferencesKey("hotspot_node_active")
         val HOTSPOT_ACTUAL_SSID = stringPreferencesKey("hotspot_actual_ssid")
         val HOTSPOT_PASSPHRASE = stringPreferencesKey("hotspot_passphrase")
@@ -25,19 +26,15 @@ class SessionPreferences(private val context: Context) {
     val currentUserIdFlow: Flow<String?> = context.dataStore.data.map { it[Keys.CURRENT_USER_ID] }
 
     val activeThemeIdFlow: Flow<String> = context.dataStore.data.map {
-        it[Keys.ACTIVE_THEME_ID] ?: ChatBackgroundTheme.OBSIDIAN_CYBER.id
+        it[Keys.ACTIVE_THEME_ID] ?: ChatBackgroundTheme.HACKER.id
+    }
+
+    val customThemeImagePathFlow: Flow<String?> = context.dataStore.data.map {
+        it[Keys.CUSTOM_THEME_IMAGE_PATH]
     }
 
     val hotspotNodeActiveFlow: Flow<Boolean> = context.dataStore.data.map {
         it[Keys.HOTSPOT_NODE_ACTIVE] ?: false
-    }
-
-    val hotspotActualSsidFlow: Flow<String> = context.dataStore.data.map {
-        it[Keys.HOTSPOT_ACTUAL_SSID] ?: "AMMAR-HACKER-5G"
-    }
-
-    val hotspotPassphraseFlow: Flow<String> = context.dataStore.data.map {
-        it[Keys.HOTSPOT_PASSPHRASE] ?: ""
     }
 
     suspend fun setCurrentUserId(userId: String?) {
@@ -47,9 +44,14 @@ class SessionPreferences(private val context: Context) {
         }
     }
 
-    suspend fun setActiveThemeId(themeId: String) {
+    suspend fun setActiveThemeId(themeId: String, customImagePath: String? = null) {
         context.dataStore.edit { prefs ->
             prefs[Keys.ACTIVE_THEME_ID] = themeId
+            if (customImagePath != null) {
+                prefs[Keys.CUSTOM_THEME_IMAGE_PATH] = customImagePath
+            } else if (themeId != ChatBackgroundTheme.CUSTOM_GALLERY.id) {
+                prefs.remove(Keys.CUSTOM_THEME_IMAGE_PATH)
+            }
         }
     }
 

@@ -26,8 +26,11 @@ interface UserDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertUser(user: UserEntity)
 
-    @Query("UPDATE users SET isBanned = :banned WHERE userId = :userId")
-    suspend fun setUserBanned(userId: String, banned: Boolean)
+    @Query("UPDATE users SET isBanned = :banned, banExpiresAt = :expiresAt WHERE userId = :userId")
+    suspend fun setUserBan(userId: String, banned: Boolean, expiresAt: Long)
+
+    @Query("UPDATE users SET badgeType = :badgeType, hasBlueTick = :hasBlueTick WHERE userId = :userId")
+    suspend fun setUserBadge(userId: String, badgeType: String, hasBlueTick: Boolean)
 
     @Query("UPDATE users SET isOnline = :online, lastSeen = :lastSeen WHERE userId = :userId")
     suspend fun setUserOnline(userId: String, online: Boolean, lastSeen: Long = System.currentTimeMillis())

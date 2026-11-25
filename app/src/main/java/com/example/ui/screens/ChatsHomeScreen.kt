@@ -29,10 +29,14 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -58,14 +62,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.local.GroupEntity
 import com.example.data.local.MessageType
 import com.example.data.local.PresenceState
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
 import com.example.network.LanConnectionState
 import com.example.ui.ChatThreadSummary
 import com.example.ui.components.MessageStatusTicks
 import com.example.ui.components.UserAvatar
-import com.example.ui.components.VerifiedBlueTick
+import com.example.ui.components.UserBadgeView
 import com.example.ui.components.formatClockTime
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.ChatBackgroundTheme
@@ -91,8 +97,10 @@ fun ChatsHomeScreen(
     theme: ChatBackgroundTheme,
     threads: List<ChatThreadSummary>,
     allUsers: List<UserEntity>,
+    allGroups: List<GroupEntity>,
     onOpenDm: (UserEntity) -> Unit,
     onOpenGroup: (String) -> Unit,
+    onJoinPublicGroup: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCreateGroup: () -> Unit,
     onOpenJoinLink: () -> Unit,
@@ -120,11 +128,20 @@ fun ChatsHomeScreen(
     val searchedUsers = remember(allUsers, searchQuery, currentUser.userId) {
         val clean = searchQuery.trim().removePrefix("@")
         allUsers.filter { u ->
-            u.userId != currentUser.userId && !u.isBanned && (
+            u.userId != currentUser.userId && !u.isCurrentlyBanned() && (
                 clean.isBlank() ||
                     u.username.contains(clean, ignoreCase = true) ||
                     u.displayName.contains(clean, ignoreCase = true)
                 )
+        }
+    }
+
+    val discoverablePublicGroups = remember(allGroups, searchQuery, currentUser.userId) {
+        val clean = searchQuery.trim()
+        allGroups.filter { grp ->
+            grp.isPublic &&
+                currentUser.userId !in grp.memberIds() &&
+                (clean.isBlank() || grp.name.contains(clean, ignoreCase = true))
         }
     }
 
@@ -162,9 +179,14 @@ fun ChatsHomeScreen(
                                 color = TextPrimary,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (currentUser.hasBlueTick) {
+                            val myBadge = currentUser.effectiveBadgeType()
+                            if (myBadge != TickBadgeType.NONE) {
                                 Spacer(Modifier.width(6.dp))
-                                VerifiedBlueTick(size = 16.dp)
+                                UserBadgeView(
+                                    badgeType = myBadge,
+                                    stickerVideoPath = currentUser.stickerVideoPath,
+                                    size = 16.dp
+                                )
                             }
                         }
                         Row(
@@ -223,7 +245,7 @@ fun ChatsHomeScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search @username or group...") },
+                        placeholder = { Text("Search @username or public group...") },
                         leadingIcon = { Icon(Icons.Rounded.PersonSearch, contentDescription = null) },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
@@ -356,7 +378,8 @@ fun ChatsHomeScreen(
                                 avatarPath = peer.avatarPath,
                                 displayName = peer.displayName,
                                 size = 48.dp,
-                                isOnline = peer.isOnline
+                                isOnline = peer.isOnline,
+                                videoAvatarPath = peer.videoAvatarPath
                             )
                             Spacer(Modifier.width(14.dp))
                             Column(modifier = Modifier.weight(1f)) {
@@ -368,9 +391,14 @@ fun ChatsHomeScreen(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    if (peer.hasBlueTick) {
+                                    val badge = peer.effectiveBadgeType()
+                                    if (badge != TickBadgeType.NONE) {
                                         Spacer(Modifier.width(6.dp))
-                                        VerifiedBlueTick(size = 15.dp)
+                                        UserBadgeView(
+                                            badgeType = badge,
+                                            stickerVideoPath = peer.stickerVideoPath,
+                                            size = 15.dp
+                                        )
                                     }
                                 }
                                 Text(
@@ -378,6 +406,55 @@ fun ChatsHomeScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = if (peer.isOnline) EmeraldSignal else TextSecondary
                                 )
+                            }
+                        }
+                    }
+                }
+
+                if (discoverablePublicGroups.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "PUBLIC LAN GROUPS",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EmeraldSignal,
+                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                        )
+                    }
+                    items(discoverablePublicGroups, key = { "pub_${it.groupId}" }) { grp ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            UserAvatar(
+                                avatarPath = grp.avatarPath,
+                                displayName = grp.name,
+                                size = 46.dp,
+                                isGroup = true
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(grp.name, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(Icons.Rounded.Public, null, tint = EmeraldSignal, modifier = Modifier.size(14.dp))
+                                }
+                                Text(
+                                    text = "${grp.memberIds().size} members • Public Group",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                            Button(
+                                onClick = { onJoinPublicGroup(grp.groupId) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = theme.accent,
+                                    contentColor = Color(0xFF04101A)
+                                ),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Join", fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -408,7 +485,7 @@ fun ChatsHomeScreen(
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                text = "Activate AMMAR-HACKER-5G in Ammar 5G Node, then tap Search to find peers by @username or create a Group.",
+                                text = "Activate AMMAR-HACKER-5G in HOTSPOT BAM, then tap Search to find peers by @username or create a Group.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -456,7 +533,8 @@ private fun ChatThreadRow(
             displayName = thread.title,
             size = 54.dp,
             isOnline = thread.isOnline,
-            isGroup = thread.isGroup
+            isGroup = thread.isGroup,
+            videoAvatarPath = thread.videoAvatarPath
         )
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -477,9 +555,13 @@ private fun ChatThreadRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (thread.hasBlueTick) {
+                    if (thread.badgeType != TickBadgeType.NONE) {
                         Spacer(Modifier.width(5.dp))
-                        VerifiedBlueTick(size = 15.dp)
+                        UserBadgeView(
+                            badgeType = thread.badgeType,
+                            stickerVideoPath = thread.stickerVideoPath,
+                            size = 15.dp
+                        )
                     }
                 }
                 Spacer(Modifier.width(8.dp))
@@ -524,18 +606,30 @@ private fun ChatThreadRow(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
-                        if (last?.type == MessageType.VOICE.name) {
-                            Icon(
-                                imageVector = Icons.Rounded.Mic,
-                                contentDescription = null,
-                                tint = theme.accent,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
+                        when (last?.type) {
+                            MessageType.VOICE.name -> {
+                                Icon(
+                                    imageVector = Icons.Rounded.Mic,
+                                    contentDescription = null,
+                                    tint = theme.accent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            MessageType.VIDEO_EMOJI.name -> {
+                                Icon(
+                                    imageVector = Icons.Rounded.Videocam,
+                                    contentDescription = null,
+                                    tint = theme.accent,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
                         }
                         val previewText = when {
                             last == null -> thread.subtitleUsername
                             last.type == MessageType.VOICE.name -> "Voice message"
+                            last.type == MessageType.VIDEO_EMOJI.name -> "Video Emoji (3s)"
                             last.type == MessageType.GROUP_INVITE.name -> "Group Invite: ${last.groupInviteName ?: "Join"}"
                             else -> if (thread.isGroup && last.type != MessageType.SYSTEM.name) {
                                 "${last.senderName}: ${last.text}"

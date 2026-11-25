@@ -22,9 +22,11 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 data class RelayServerTelemetry(
     val isRunning: Boolean = false,
@@ -48,7 +50,11 @@ class LanRelayServer(
     private val clients = ConcurrentHashMap<String, ClientConn>()
     private val knownDirectory = ConcurrentHashMap<String, JSONObject>()
     private val groupsCache = ConcurrentHashMap<String, JSONObject>()
-    @Volatile private var currentThemeId: String = "obsidian_cyber"
+    private val recentChatPackets = CopyOnWriteArrayList<JSONObject>()
+    private val seenMsgIds = ConcurrentHashMap.newKeySet<String>()
+
+    @Volatile private var currentThemeId: String = "hacker"
+    @Volatile private var currentCustomThemeBase64: String = ""
 
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
@@ -141,20 +147,32 @@ class LanRelayServer(
                 while (isActive && _telemetry.value.isRunning) {
                     val payload = "${LanProtocol.UDP_BEACON_PREFIX}|ONLINE|${ssidProvider()}|${LanProtocol.RELAY_TCP_PORT}|${bandProvider()}"
                     val data = payload.toByteArray()
-                    runCatching {
-                        sock.send(
-                            DatagramPacket(
-                                data,
-                                data.size,
-                                InetAddress.getByName("255.255.255.255"),
-                                LanProtocol.DISCOVERY_UDP_PORT
-                            )
-                        )
+                    val targets = collectBroadcastAddresses()
+                    targets.forEach { addr ->
+                        runCatching {
+                            sock.send(DatagramPacket(data, data.size, addr, LanProtocol.DISCOVERY_UDP_PORT))
+                        }
                     }
                     delay(1200)
                 }
             }
         }
+    }
+
+    private fun collectBroadcastAddresses(): List<InetAddress> {
+        val list = mutableSetOf<InetAddress>()
+        runCatching { list.add(InetAddress.getByName("255.255.255.255")) }
+        runCatching {
+            val intfs = NetworkInterface.getNetworkInterfaces()
+            while (intfs != null && intfs.hasMoreElements()) {
+                val ni = intfs.nextElement()
+                if (!ni.isUp || ni.isLoopback) continue
+                for (ia in ni.interfaceAddresses) {
+                    ia.broadcast?.let { list.add(it) }
+                }
+            }
+        }
+        return list.toList()
     }
 
     private fun handleClient(connKey: String, socket: Socket) {
@@ -175,8 +193,11 @@ class LanRelayServer(
         } finally {
             clients.remove(connKey)
             if (conn.userId.isNotEmpty()) {
-                knownDirectory[conn.userId]?.put("isOnline", false)
-                broadcastDirectory()
+                val stillConnected = clients.values.any { it.userId == conn.userId }
+                if (!stillConnected) {
+                    knownDirectory[conn.userId]?.put("isOnline", false)
+                    broadcastDirectory()
+                }
                 appendLog("Peer disconnected: @${conn.publicUserJson?.optString("username") ?: conn.userId}")
             }
             runCatching { socket.close() }
@@ -185,8 +206,7 @@ class LanRelayServer(
     }
 
     private fun processPacket(sender: ClientConn, json: JSONObject) {
-        val type = json.optString("type")
-        when (type) {
+        when (json.optString("type")) {
             LanProtocol.TYPE_PING -> {
                 val pong = LanProtocol.packet(LanProtocol.TYPE_PONG) {
                     put("echoTs", json.optLong("ts", System.currentTimeMillis()))
@@ -201,30 +221,61 @@ class LanRelayServer(
                 val uid = userObj.optString("userId")
                 if (uid.isBlank()) return
                 sender.userId = uid
-                val existingBan = knownDirectory[uid]?.optBoolean("isBanned", false) ?: false
+
+                val prev = knownDirectory[uid]
+                if (prev != null) {
+                    if (prev.optBoolean("isBanned", false)) {
+                        userObj.put("isBanned", true)
+                        userObj.put("banExpiresAt", prev.optLong("banExpiresAt", -1L))
+                    }
+                    val prevBadge = prev.optString("badgeType", "NONE")
+                    if (prevBadge != "NONE" && userObj.optString("badgeType", "NONE") == "NONE") {
+                        userObj.put("badgeType", prevBadge)
+                        userObj.put("hasBlueTick", prev.optBoolean("hasBlueTick", false))
+                    }
+                }
                 userObj.put("isOnline", true)
-                if (existingBan) userObj.put("isBanned", true)
                 sender.publicUserJson = userObj
                 knownDirectory[uid] = userObj
 
                 appendLog("Peer joined: @${userObj.optString("username")} (${sender.socket.inetAddress.hostAddress})")
                 broadcastDirectory()
-                sendDirectoryAndGroupsTo(sender)
+                sendDirectoryGroupsAndMissedMsgsTo(sender, uid)
             }
 
             LanProtocol.TYPE_THEME_SYNC -> {
                 currentThemeId = json.optString("themeId", currentThemeId)
+                currentCustomThemeBase64 = json.optString("customBgBase64", "")
                 broadcastAll(json.toString())
-                appendLog("Owner synced theme: $currentThemeId")
+                appendLog("Theme synced: $currentThemeId")
             }
 
             LanProtocol.TYPE_MOD_BAN -> {
                 val targetId = json.optString("targetUserId")
                 val banned = json.optBoolean("isBanned", false)
-                knownDirectory[targetId]?.put("isBanned", banned)
+                val expiresAt = json.optLong("banExpiresAt", if (banned) -1L else 0L)
+                knownDirectory[targetId]?.apply {
+                    put("isBanned", banned)
+                    put("banExpiresAt", expiresAt)
+                }
                 broadcastAll(json.toString())
                 broadcastDirectory()
                 appendLog("Moderation update for $targetId -> banned=$banned")
+            }
+
+            LanProtocol.TYPE_BADGE_SYNC -> {
+                val targetId = json.optString("targetUserId")
+                val badgeType = json.optString("badgeType", "NONE")
+                val hasBlue = badgeType == "BLUE"
+                val stickerB64 = json.optString("stickerVideoBase64", "")
+                knownDirectory[targetId]?.apply {
+                    put("badgeType", badgeType)
+                    put("hasBlueTick", hasBlue)
+                    if (stickerB64.isNotBlank()) put("stickerVideoBase64", stickerB64)
+                }
+                broadcastAll(json.toString())
+                broadcastDirectory()
+                appendLog("Badge update for $targetId -> $badgeType")
             }
 
             LanProtocol.TYPE_GROUP_SYNC -> {
@@ -237,19 +288,52 @@ class LanRelayServer(
                 appendLog("Group synced: ${groupObj?.optString("name") ?: gid}")
             }
 
+            LanProtocol.TYPE_GROUP_JOIN_REQUEST -> {
+                val gid = json.optString("groupId")
+                val token = json.optString("token")
+                val reqUserId = json.optString("userId")
+                val grp = groupsCache[gid]
+                if (grp != null && reqUserId.isNotBlank()) {
+                    val isPublic = grp.optBoolean("isPublic", true)
+                    val grpToken = grp.optString("inviteToken", "")
+                    if (isPublic || (token.isNotBlank() && token == grpToken)) {
+                        val members = LanProtocol.jsonArrayToStringList(grp.optJSONArray("memberIds")).toMutableSet()
+                        members.add(reqUserId)
+                        grp.put("memberIds", LanProtocol.stringListToJsonArray(members.toList()))
+                        val syncPkt = LanProtocol.packet(LanProtocol.TYPE_GROUP_SYNC) { put("group", grp) }
+                        broadcastAll(syncPkt.toString())
+                        appendLog("Joined group $gid: $reqUserId")
+                    }
+                }
+            }
+
             LanProtocol.TYPE_GROUP_KICK -> {
                 val gid = json.optString("groupId")
                 val targetId = json.optString("targetUserId")
                 groupsCache[gid]?.let { grp ->
                     val members = LanProtocol.jsonArrayToStringList(grp.optJSONArray("memberIds"))
                         .filterNot { it == targetId }
+                    val admins = LanProtocol.jsonArrayToStringList(grp.optJSONArray("adminIds"))
+                        .filterNot { it == targetId }
                     grp.put("memberIds", LanProtocol.stringListToJsonArray(members))
+                    grp.put("adminIds", LanProtocol.stringListToJsonArray(admins))
                 }
                 broadcastAll(json.toString())
                 appendLog("Removed $targetId from group $gid")
             }
 
-            LanProtocol.TYPE_CHAT_MSG,
+            LanProtocol.TYPE_CHAT_MSG -> {
+                val msgId = json.optString("msgId")
+                if (msgId.isNotBlank() && seenMsgIds.add(msgId)) {
+                    recentChatPackets.add(json)
+                    while (recentChatPackets.size > 300) {
+                        recentChatPackets.removeAt(0)
+                    }
+                }
+                broadcastExcept(sender, json.toString())
+                incrementPackets()
+            }
+
             LanProtocol.TYPE_MSG_ACK,
             LanProtocol.TYPE_PRESENCE -> {
                 broadcastExcept(sender, json.toString())
@@ -258,12 +342,13 @@ class LanRelayServer(
         }
     }
 
-    private fun sendDirectoryAndGroupsTo(target: ClientConn) {
+    private fun sendDirectoryGroupsAndMissedMsgsTo(target: ClientConn, uid: String) {
         val dirPacket = LanProtocol.packet(LanProtocol.TYPE_DIRECTORY) {
             val arr = JSONArray()
             knownDirectory.values.forEach { arr.put(it) }
             put("users", arr)
             put("themeId", currentThemeId)
+            put("customBgBase64", currentCustomThemeBase64)
         }
         sendToClient(target, dirPacket.toString())
 
@@ -273,6 +358,15 @@ class LanRelayServer(
             }
             sendToClient(target, pkt.toString())
         }
+
+        recentChatPackets.forEach { msgJson ->
+            val isGroup = msgJson.optBoolean("isGroup", false)
+            val senderId = msgJson.optString("senderId")
+            val recipientId = msgJson.optString("recipientId")
+            if (isGroup || recipientId == uid || senderId == uid) {
+                sendToClient(target, msgJson.toString())
+            }
+        }
     }
 
     private fun broadcastDirectory() {
@@ -281,6 +375,7 @@ class LanRelayServer(
             knownDirectory.values.forEach { arr.put(it) }
             put("users", arr)
             put("themeId", currentThemeId)
+            put("customBgBase64", currentCustomThemeBase64)
         }
         broadcastAll(dirPacket.toString())
     }

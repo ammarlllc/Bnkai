@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,35 +25,50 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Router
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Verified
+import androidx.compose.material.icons.rounded.VideoCall
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
+import com.example.ui.components.GrantTickDialog
+import com.example.ui.components.TimedBanDialog
 import com.example.ui.components.UserAvatar
-import com.example.ui.components.VerifiedBlueTick
+import com.example.ui.components.UserBadgeView
+import com.example.ui.components.formatBanRemaining
 import com.example.ui.theme.ChatBackgroundTheme
 import com.example.ui.theme.CrimsonAlert
 import com.example.ui.theme.EmeraldSignal
@@ -61,23 +78,52 @@ import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ObsidianSurfaceHigh
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import java.io.File
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsAndOwnerScreen(
     currentUser: UserEntity,
     allUsers: List<UserEntity>,
     activeTheme: ChatBackgroundTheme,
+    customThemeImagePath: String?,
     onBack: () -> Unit,
     onUpdateAvatar: (Uri) -> Unit,
+    onSetVideoAvatar: (Uri) -> Unit,
+    onSetOwnerBadgeAndSticker: (TickBadgeType, Uri?) -> Unit,
+    onSetUserBadge: (String, TickBadgeType) -> Unit,
     onSelectTheme: (ChatBackgroundTheme) -> Unit,
-    onToggleBan: (String, Boolean) -> Unit,
+    onRandomTheme: () -> Unit,
+    onSelectCustomGalleryTheme: (Uri) -> Unit,
+    onBanWithDuration: (String, Long) -> Unit,
     onOpenHotspotNode: () -> Unit,
     onSignOut: () -> Unit
 ) {
+    var banTargetUser by remember { mutableStateOf<UserEntity?>(null) }
+    var tickTargetUser by remember { mutableStateOf<UserEntity?>(null) }
+
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) onUpdateAvatar(uri)
+    }
+
+    val videoAvatarPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onSetVideoAvatar(uri)
+    }
+
+    val videoStickerPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onSetOwnerBadgeAndSticker(TickBadgeType.VIDEO_STICKER, uri)
+    }
+
+    val galleryThemePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onSelectCustomGalleryTheme(uri)
     }
 
     Scaffold(
@@ -116,48 +162,118 @@ fun SettingsAndOwnerScreen(
                     color = ObsidianSurface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier.padding(18.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier.clickable {
-                                photoPicker.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier.clickable {
+                                    photoPicker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                            ) {
+                                UserAvatar(
+                                    avatarPath = currentUser.avatarPath,
+                                    displayName = currentUser.displayName,
+                                    size = 72.dp,
+                                    isOnline = true,
+                                    videoAvatarPath = currentUser.videoAvatarPath
                                 )
                             }
-                        ) {
-                            UserAvatar(
-                                avatarPath = currentUser.avatarPath,
-                                displayName = currentUser.displayName,
-                                size = 72.dp,
-                                isOnline = true
-                            )
-                        }
-                        Spacer(Modifier.width(16.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Spacer(Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = currentUser.displayName,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    val myBadge = currentUser.effectiveBadgeType()
+                                    if (myBadge != TickBadgeType.NONE) {
+                                        Spacer(Modifier.width(6.dp))
+                                        UserBadgeView(
+                                            badgeType = myBadge,
+                                            stickerVideoPath = currentUser.stickerVideoPath,
+                                            size = 18.dp
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = currentUser.displayName,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold
+                                    text = "@${currentUser.username}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = activeTheme.accent
                                 )
-                                if (currentUser.hasBlueTick) {
+                                Text(
+                                    text = "Tap avatar to change photo",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+
+                        if (currentUser.canUseVideoFeatures()) {
+                            Spacer(Modifier.height(14.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        videoAvatarPicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                        )
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Rounded.VideoCall, null, tint = activeTheme.accent, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(6.dp))
-                                    VerifiedBlueTick(size = 18.dp)
+                                    Text("Video Profile", color = TextPrimary, style = MaterialTheme.typography.labelMedium)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        videoStickerPicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                        )
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Rounded.Verified, null, tint = EmeraldSignal, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Video Sticker", color = TextPrimary, style = MaterialTheme.typography.labelMedium)
                                 }
                             }
-                            Text(
-                                text = "@${currentUser.username}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = activeTheme.accent
-                            )
-                            Text(
-                                text = "Tap photo to update profile picture",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary
-                            )
+                            if (currentUser.isOwner) {
+                                Spacer(Modifier.height(10.dp))
+                                Text("Your Badge Style:", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                Spacer(Modifier.height(6.dp))
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf(
+                                        TickBadgeType.BLUE to "Blue Tick",
+                                        TickBadgeType.GREEN to "Green Tick",
+                                        TickBadgeType.RED to "Red Tick"
+                                    ).forEach { (badge, label) ->
+                                        val selected = currentUser.effectiveBadgeType() == badge
+                                        Surface(
+                                            shape = RoundedCornerShape(50),
+                                            color = if (selected) activeTheme.accent.copy(alpha = 0.2f) else ObsidianSurfaceHigh,
+                                            modifier = Modifier.clickable { onSetOwnerBadgeAndSticker(badge, null) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                UserBadgeView(badgeType = badge, size = 14.dp)
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(label, color = TextPrimary, style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if (currentUser.effectiveBadgeType() == TickBadgeType.VIDEO_STICKER) {
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { onSetOwnerBadgeAndSticker(TickBadgeType.GREEN, null) }) {
+                                    Text("Switch back to Green Tick", color = EmeraldSignal)
+                                }
+                            }
                         }
                     }
                 }
@@ -179,8 +295,8 @@ fun SettingsAndOwnerScreen(
                         Icon(Icons.Rounded.Router, contentDescription = null, tint = EmeraldSignal)
                         Spacer(Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Ammar 5G Node", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                            Text("Manage AMMAR-HACKER-5G hotspot & LAN relay", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text("HOTSPOT BAM Node", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                            Text("Manage AMMAR-HACKER-5G hotspot & 6 km LAN relay", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                         }
                     }
                 }
@@ -195,17 +311,35 @@ fun SettingsAndOwnerScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Palette, contentDescription = null, tint = activeTheme.accent)
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "Background Theme",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Rounded.Palette, contentDescription = null, tint = activeTheme.accent)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        text = "3D Animated Themes",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Row {
+                                    IconButton(onClick = onRandomTheme) {
+                                        Icon(Icons.Rounded.Shuffle, contentDescription = "Random 3D Theme", tint = activeTheme.accent)
+                                    }
+                                    IconButton(onClick = {
+                                        galleryThemePicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    }) {
+                                        Icon(Icons.Rounded.Image, contentDescription = "Choose Theme from Gallery", tint = EmeraldSignal)
+                                    }
+                                }
                             }
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(10.dp))
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 items(ChatBackgroundTheme.entries) { itemTheme ->
                                     val selected = itemTheme == activeTheme
@@ -219,7 +353,15 @@ fun SettingsAndOwnerScreen(
                                         modifier = Modifier
                                             .width(136.dp)
                                             .clip(RoundedCornerShape(14.dp))
-                                            .clickable { onSelectTheme(itemTheme) }
+                                            .clickable {
+                                                if (itemTheme == ChatBackgroundTheme.CUSTOM_GALLERY) {
+                                                    galleryThemePicker.launch(
+                                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                                    )
+                                                } else {
+                                                    onSelectTheme(itemTheme)
+                                                }
+                                            }
                                             .testTag("theme_${itemTheme.id}")
                                     ) {
                                         Column(modifier = Modifier.padding(10.dp)) {
@@ -234,6 +376,15 @@ fun SettingsAndOwnerScreen(
                                                     .border(1.dp, itemTheme.accent.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
                                                 contentAlignment = Alignment.TopEnd
                                             ) {
+                                                val bgFile = customThemeImagePath?.let { File(it) }?.takeIf { it.exists() }
+                                                if (itemTheme == ChatBackgroundTheme.CUSTOM_GALLERY && bgFile != null) {
+                                                    AsyncImage(
+                                                        model = bgFile,
+                                                        contentDescription = null,
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
                                                 if (selected) {
                                                     Icon(
                                                         imageVector = Icons.Rounded.CheckCircle,
@@ -260,7 +411,7 @@ fun SettingsAndOwnerScreen(
 
                 item {
                     Text(
-                        text = "ACCOUNT MODERATION",
+                        text = "USER MODERATION & TICKS",
                         style = MaterialTheme.typography.labelMedium,
                         color = activeTheme.accent
                     )
@@ -277,6 +428,7 @@ fun SettingsAndOwnerScreen(
                     }
                 } else {
                     items(otherUsers, key = { it.userId }) { u ->
+                        val bannedNow = u.isCurrentlyBanned()
                         Surface(
                             shape = RoundedCornerShape(14.dp),
                             color = ObsidianSurface,
@@ -286,20 +438,44 @@ fun SettingsAndOwnerScreen(
                                 modifier = Modifier.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                UserAvatar(u.avatarPath, u.displayName, size = 42.dp, isOnline = u.isOnline)
+                                UserAvatar(
+                                    avatarPath = u.avatarPath,
+                                    displayName = u.displayName,
+                                    size = 42.dp,
+                                    isOnline = u.isOnline,
+                                    videoAvatarPath = u.videoAvatarPath
+                                )
                                 Spacer(Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(u.displayName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(u.displayName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                                        val badge = u.effectiveBadgeType()
+                                        if (badge != TickBadgeType.NONE) {
+                                            Spacer(Modifier.width(5.dp))
+                                            UserBadgeView(
+                                                badgeType = badge,
+                                                stickerVideoPath = u.stickerVideoPath,
+                                                size = 14.dp
+                                            )
+                                        }
+                                    }
                                     Text(
-                                        text = "@${u.username} • ${if (u.isBanned) "BANNED" else "Active"}",
+                                        text = if (bannedNow) {
+                                            "@${u.username} • ${formatBanRemaining(u.banExpiresAt)}"
+                                        } else {
+                                            "@${u.username} • Active"
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = if (u.isBanned) CrimsonAlert else TextSecondary
+                                        color = if (bannedNow) CrimsonAlert else TextSecondary
                                     )
                                 }
+                                IconButton(onClick = { tickTargetUser = u }) {
+                                    Icon(Icons.Rounded.Verified, contentDescription = "Manage Tick", tint = EmeraldSignal)
+                                }
                                 Button(
-                                    onClick = { onToggleBan(u.userId, !u.isBanned) },
+                                    onClick = { banTargetUser = u },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (u.isBanned) EmeraldSignal else CrimsonAlert,
+                                        containerColor = if (bannedNow) EmeraldSignal else CrimsonAlert,
                                         contentColor = Color.White
                                     ),
                                     shape = RoundedCornerShape(10.dp),
@@ -307,7 +483,7 @@ fun SettingsAndOwnerScreen(
                                 ) {
                                     Icon(Icons.Rounded.Block, null, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(if (u.isBanned) "Unban" else "Ban")
+                                    Text(if (bannedNow) "Ban/Unban" else "Ban")
                                 }
                             }
                         }
@@ -335,5 +511,22 @@ fun SettingsAndOwnerScreen(
                 }
             }
         }
+    }
+
+    banTargetUser?.let { target ->
+        TimedBanDialog(
+            targetUser = target,
+            onDismiss = { banTargetUser = null },
+            onSelectDuration = { durationMs -> onBanWithDuration(target.userId, durationMs) }
+        )
+    }
+
+    tickTargetUser?.let { target ->
+        GrantTickDialog(
+            targetUser = target,
+            theme = activeTheme,
+            onDismiss = { tickTargetUser = null },
+            onSelectBadge = { badge -> onSetUserBadge(target.userId, badge) }
+        )
     }
 }

@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.ui.components.formatBanRemaining
+import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.CrimsonAlert
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.ObsidianSurface
@@ -43,6 +45,7 @@ import com.example.ui.theme.TextSecondary
 @Composable
 fun BannedScreen(
     username: String,
+    banExpiresAt: Long,
     onSignOut: () -> Unit
 ) {
     Box(
@@ -98,6 +101,21 @@ fun BannedScreen(
                     color = TextSecondary,
                     textAlign = TextAlign.Center
                 )
+
+                Spacer(Modifier.height(8.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = CrimsonAlert.copy(alpha = 0.14f)
+                ) {
+                    Text(
+                        text = formatBanRemaining(banExpiresAt),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AmberWarn,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
 
                 Spacer(Modifier.height(24.dp))
 

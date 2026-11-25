@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.example.audio.MediaUtils
 import com.example.audio.RecordedVoiceResult
+import com.example.audio.VideoUtils
 import com.example.audio.VoiceAudioManager
 import com.example.audio.VoicePlaybackState
 import com.example.audio.VoiceRecordingState
@@ -14,6 +15,7 @@ import com.example.data.local.MessageStatus
 import com.example.data.local.MessageType
 import com.example.data.local.PresenceState
 import com.example.data.local.SessionPreferences
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
 import com.example.network.LanChatClient
 import com.example.network.LanConnectionState
@@ -28,10 +30,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
@@ -68,8 +71,11 @@ class ChatRepository(
     val playbackState: StateFlow<VoicePlaybackState> = voiceManager.playbackState
 
     val activeTheme: StateFlow<ChatBackgroundTheme> = prefs.activeThemeIdFlow
-        .combine(flowOf(Unit)) { id, _ -> ChatBackgroundTheme.fromId(id) }
-        .stateIn(scope, SharingStarted.Eagerly, ChatBackgroundTheme.OBSIDIAN_CYBER)
+        .map { id -> ChatBackgroundTheme.fromId(id) }
+        .stateIn(scope, SharingStarted.Eagerly, ChatBackgroundTheme.HACKER)
+
+    val customThemeImagePath: StateFlow<String?> = prefs.customThemeImagePathFlow
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val currentUser: StateFlow<UserEntity?> = prefs.currentUserIdFlow
@@ -105,7 +111,21 @@ class ChatRepository(
         }
         scope.launch {
             lanClient.incomingPackets.collect { packet ->
-                handleIncomingPacket(packet)
+                runCatching {
+                    handleIncomingPacket(packet)
+                }
+            }
+        }
+        // Automatically clear expired timed bans
+        scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                userDao.getAllUsersOnce().forEach { u ->
+                    if (u.isBanned && u.banExpiresAt > 0L && now >= u.banExpiresAt) {
+                        userDao.setUserBan(u.userId, false, 0L)
+                    }
+                }
+                delay(5000)
             }
         }
     }
@@ -158,13 +178,9 @@ class ChatRepository(
             MediaUtils.savePickedImage(context, it, "avatar_$cleanUsername")
         }
 
-        val resolvedName = if (owner && cleanName.equals(OwnerCredentials.DISPLAY_NAME, ignoreCase = true)) {
-            OwnerCredentials.DISPLAY_NAME
-        } else if (owner) {
-            OwnerCredentials.DISPLAY_NAME
-        } else {
-            cleanName
-        }
+        val resolvedName = if (owner) OwnerCredentials.DISPLAY_NAME else cleanName
+        val badge = existing?.badgeType?.takeIf { it != TickBadgeType.NONE.name }
+            ?: if (owner) TickBadgeType.BLUE.name else TickBadgeType.NONE.name
 
         val user = UserEntity(
             userId = userId,
@@ -173,9 +189,15 @@ class ChatRepository(
             username = cleanUsername,
             avatarPath = processedAvatar?.filePath ?: existing?.avatarPath,
             avatarBase64 = processedAvatar?.base64 ?: existing?.avatarBase64,
+            videoAvatarPath = existing?.videoAvatarPath,
+            videoAvatarBase64 = existing?.videoAvatarBase64,
             isOwner = owner,
-            hasBlueTick = owner,
+            hasBlueTick = owner || badge == TickBadgeType.BLUE.name,
+            badgeType = badge,
+            stickerVideoPath = existing?.stickerVideoPath,
+            stickerVideoBase64 = existing?.stickerVideoBase64,
             isBanned = existing?.isBanned ?: false,
+            banExpiresAt = existing?.banExpiresAt ?: 0L,
             isOnline = true,
             lastSeen = System.currentTimeMillis()
         )
@@ -201,6 +223,7 @@ class ChatRepository(
         if (isOwnerCredentials(cleanEmail, cleanUsername)) {
             val userId = "u_${OwnerCredentials.USERNAME}"
             val existing = userDao.getUserById(userId)
+            val badge = existing?.badgeType?.takeIf { it != TickBadgeType.NONE.name } ?: TickBadgeType.BLUE.name
             val ownerUser = UserEntity(
                 userId = userId,
                 email = OwnerCredentials.EMAIL,
@@ -208,9 +231,15 @@ class ChatRepository(
                 username = OwnerCredentials.USERNAME,
                 avatarPath = existing?.avatarPath,
                 avatarBase64 = existing?.avatarBase64,
+                videoAvatarPath = existing?.videoAvatarPath,
+                videoAvatarBase64 = existing?.videoAvatarBase64,
                 isOwner = true,
-                hasBlueTick = true,
+                hasBlueTick = badge == TickBadgeType.BLUE.name,
+                badgeType = badge,
+                stickerVideoPath = existing?.stickerVideoPath,
+                stickerVideoBase64 = existing?.stickerVideoBase64,
                 isBanned = false,
+                banExpiresAt = 0L,
                 isOnline = true,
                 lastSeen = System.currentTimeMillis()
             )
@@ -258,6 +287,69 @@ class ChatRepository(
         return Result.success(Unit)
     }
 
+    suspend fun setMyVideoAvatar(videoUri: Uri): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        if (!me.canUseVideoFeatures()) {
+            return Result.failure(IllegalStateException("Video profile requires Owner or Green Tick privilege"))
+        }
+        val processed = VideoUtils.trimAndSaveVideo(context, videoUri, "vavatar_${me.username}", 4000L)
+            .getOrElse { return Result.failure(it) }
+        val updated = me.copy(
+            videoAvatarPath = processed.filePath,
+            videoAvatarBase64 = processed.base64
+        )
+        userDao.upsertUser(updated)
+        lanClient.updateHelloUser(toPublicUserJson(updated))
+        return Result.success(Unit)
+    }
+
+    suspend fun setOwnerBadgeAndSticker(
+        badgeType: TickBadgeType,
+        stickerVideoUri: Uri? = null
+    ): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        if (!me.isOwner && !(me.canUseVideoFeatures() && badgeType == TickBadgeType.VIDEO_STICKER)) {
+            return Result.failure(IllegalStateException("Unauthorized"))
+        }
+        var stickerPath = me.stickerVideoPath
+        var stickerB64 = me.stickerVideoBase64
+        if (stickerVideoUri != null) {
+            val processed = VideoUtils.trimAndSaveVideo(context, stickerVideoUri, "sticker_${me.username}", 3000L)
+                .getOrElse { return Result.failure(it) }
+            stickerPath = processed.filePath
+            stickerB64 = processed.base64
+        }
+        if (badgeType == TickBadgeType.VIDEO_STICKER && stickerB64.isNullOrBlank()) {
+            return Result.failure(IllegalArgumentException("Please select a 3s video for your sticker badge"))
+        }
+        val updated = me.copy(
+            badgeType = badgeType.name,
+            hasBlueTick = badgeType == TickBadgeType.BLUE,
+            stickerVideoPath = stickerPath,
+            stickerVideoBase64 = stickerB64
+        )
+        userDao.upsertUser(updated)
+        lanClient.updateHelloUser(toPublicUserJson(updated))
+        lanClient.sendPacket(LanProtocol.packet(LanProtocol.TYPE_BADGE_SYNC) {
+            put("targetUserId", me.userId)
+            put("badgeType", badgeType.name)
+            put("stickerVideoBase64", stickerB64 ?: "")
+        })
+        return Result.success(Unit)
+    }
+
+    suspend fun setUserBadgeByOwner(targetUserId: String, badgeType: TickBadgeType): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        if (!me.isOwner) return Result.failure(IllegalStateException("Unauthorized"))
+        val hasBlue = badgeType == TickBadgeType.BLUE
+        userDao.setUserBadge(targetUserId, badgeType.name, hasBlue)
+        lanClient.sendPacket(LanProtocol.packet(LanProtocol.TYPE_BADGE_SYNC) {
+            put("targetUserId", targetUserId)
+            put("badgeType", badgeType.name)
+        })
+        return Result.success(Unit)
+    }
+
     fun isHotspotReadyForMessaging(): Boolean {
         val state = lanClient.connectionState.value
         return state.isConnected && state.isHotspotActive
@@ -270,9 +362,16 @@ class ChatRepository(
         text: String
     ): Result<MessageEntity> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
-        if (me.isBanned) return Result.failure(IllegalStateException("Account restricted"))
+        if (me.isCurrentlyBanned()) return Result.failure(IllegalStateException("Account restricted"))
         if (!isHotspotReadyForMessaging()) {
-            return Result.failure(IllegalStateException("Hotspot is OFF. Turn on AMMAR-HACKER-5G in Ammar 5G Node to send messages."))
+            return Result.failure(IllegalStateException("Hotspot is OFF. Turn on AMMAR-HACKER-5G in HOTSPOT BAM to send messages."))
+        }
+        if (isGroup) {
+            val grp = groupDao.getGroupById(recipientId)
+            val mutedUntil = grp?.mutedUntil(me.userId) ?: 0L
+            if (mutedUntil > System.currentTimeMillis()) {
+                return Result.failure(IllegalStateException("You are muted from sending messages in this group."))
+            }
         }
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Message cannot be empty"))
@@ -292,7 +391,7 @@ class ChatRepository(
             isReadByMe = true
         )
         messageDao.upsertMessage(msg)
-        broadcastChatMessage(msg, audioBase64 = null)
+        broadcastChatMessage(msg, mediaBase64 = null)
         sendPresence(chatId, isGroup, recipientId, PresenceState.IDLE)
         return Result.success(msg)
     }
@@ -304,9 +403,15 @@ class ChatRepository(
         recorded: RecordedVoiceResult
     ): Result<MessageEntity> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
-        if (me.isBanned) return Result.failure(IllegalStateException("Account restricted"))
+        if (me.isCurrentlyBanned()) return Result.failure(IllegalStateException("Account restricted"))
         if (!isHotspotReadyForMessaging()) {
-            return Result.failure(IllegalStateException("Hotspot is OFF. Turn on AMMAR-HACKER-5G in Ammar 5G Node to send voice messages."))
+            return Result.failure(IllegalStateException("Hotspot is OFF. Turn on AMMAR-HACKER-5G in HOTSPOT BAM."))
+        }
+        if (isGroup) {
+            val grp = groupDao.getGroupById(recipientId)
+            if ((grp?.mutedUntil(me.userId) ?: 0L) > System.currentTimeMillis()) {
+                return Result.failure(IllegalStateException("You are muted from sending messages in this group."))
+            }
         }
 
         val msg = MessageEntity(
@@ -326,8 +431,53 @@ class ChatRepository(
             isReadByMe = true
         )
         messageDao.upsertMessage(msg)
-        broadcastChatMessage(msg, audioBase64 = recorded.base64)
+        broadcastChatMessage(msg, mediaBase64 = recorded.base64)
         sendPresence(chatId, isGroup, recipientId, PresenceState.IDLE)
+        return Result.success(msg)
+    }
+
+    suspend fun sendVideoEmojiMessage(
+        chatId: String,
+        isGroup: Boolean,
+        recipientId: String,
+        videoUri: Uri
+    ): Result<MessageEntity> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        if (!me.canUseVideoFeatures()) {
+            return Result.failure(IllegalStateException("Video Emoji requires Owner or Green Tick privilege"))
+        }
+        if (me.isCurrentlyBanned()) return Result.failure(IllegalStateException("Account restricted"))
+        if (!isHotspotReadyForMessaging()) {
+            return Result.failure(IllegalStateException("Hotspot is OFF. Cannot send video emoji."))
+        }
+        if (isGroup) {
+            val grp = groupDao.getGroupById(recipientId)
+            if ((grp?.mutedUntil(me.userId) ?: 0L) > System.currentTimeMillis()) {
+                return Result.failure(IllegalStateException("You are muted from sending messages in this group."))
+            }
+        }
+
+        val processed = VideoUtils.trimAndSaveVideo(context, videoUri, "vemoji", 3000L)
+            .getOrElse { return Result.failure(it) }
+
+        val msg = MessageEntity(
+            msgId = UUID.randomUUID().toString(),
+            chatId = chatId,
+            isGroup = isGroup,
+            senderId = me.userId,
+            senderName = me.displayName,
+            senderUsername = me.username,
+            recipientId = recipientId,
+            type = MessageType.VIDEO_EMOJI.name,
+            text = "Video Emoji (3s)",
+            videoPath = processed.filePath,
+            durationMs = processed.durationMs,
+            timestamp = System.currentTimeMillis(),
+            status = MessageStatus.SENT.name,
+            isReadByMe = true
+        )
+        messageDao.upsertMessage(msg)
+        broadcastChatMessage(msg, mediaBase64 = processed.base64)
         return Result.success(msg)
     }
 
@@ -342,6 +492,7 @@ class ChatRepository(
             return Result.failure(IllegalStateException("Hotspot is OFF. Cannot send group invite."))
         }
         val link = buildInviteLink(group)
+        val snapshot = groupToJson(group).toString()
         val msg = MessageEntity(
             msgId = UUID.randomUUID().toString(),
             chatId = chatId,
@@ -357,10 +508,11 @@ class ChatRepository(
             groupInviteId = group.groupId,
             groupInviteName = group.name,
             groupInviteToken = group.inviteToken,
+            groupSnapshotJson = snapshot,
             isReadByMe = true
         )
         messageDao.upsertMessage(msg)
-        broadcastChatMessage(msg, audioBase64 = null)
+        broadcastChatMessage(msg, mediaBase64 = null)
         return Result.success(msg)
     }
 
@@ -378,7 +530,7 @@ class ChatRepository(
         lanClient.sendPacket(pkt)
     }
 
-    suspend fun createGroup(name: String, avatarUri: Uri?): Result<GroupEntity> {
+    suspend fun createGroup(name: String, avatarUri: Uri?, isPublic: Boolean): Result<GroupEntity> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
         val cleanName = name.trim()
         if (cleanName.isBlank()) return Result.failure(IllegalArgumentException("Group name required"))
@@ -395,7 +547,8 @@ class ChatRepository(
             inviteToken = UUID.randomUUID().toString().take(10),
             creatorId = me.userId,
             adminIdsCsv = me.userId,
-            memberIdsCsv = me.userId
+            memberIdsCsv = me.userId,
+            isPublic = isPublic
         )
         groupDao.upsertGroup(group)
         broadcastGroupSync(group)
@@ -409,7 +562,7 @@ class ChatRepository(
             senderUsername = me.username,
             recipientId = group.groupId,
             type = MessageType.SYSTEM.name,
-            text = "@${me.username} created group \"${group.name}\"",
+            text = "@${me.username} created ${if (isPublic) "public" else "private"} group \"${group.name}\"",
             timestamp = System.currentTimeMillis(),
             status = MessageStatus.READ.name,
             isReadByMe = true
@@ -421,19 +574,131 @@ class ChatRepository(
     fun buildInviteLink(group: GroupEntity): String =
         "ammarchat://join/${group.groupId}/${group.inviteToken}"
 
-    suspend fun joinGroupByInvite(groupId: String, token: String): Result<GroupEntity> {
+    suspend fun joinGroupByInvite(
+        groupId: String,
+        token: String,
+        snapshotJson: String? = null
+    ): Result<GroupEntity> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
-        val group = groupDao.getGroupById(groupId)
-            ?: return Result.failure(IllegalArgumentException("Group not found on LAN yet"))
-        if (group.inviteToken != token) {
+
+        // 1. Check local DB first; if missing, reconstruct from embedded invite snapshot if valid
+        var group = groupDao.getGroupById(groupId)
+        if (group == null && !snapshotJson.isNullOrBlank()) {
+            val snapObj = runCatching { JSONObject(snapshotJson) }.getOrNull()
+            if (snapObj != null && snapObj.optString("groupId") == groupId) {
+                group = parseGroupJson(snapObj, existing = null)
+                groupDao.upsertGroup(group)
+            }
+        }
+
+        // 2. If still missing, ask LAN Relay Server and wait briefly for GROUP_SYNC
+        if (group == null) {
+            lanClient.sendPacket(LanProtocol.packet(LanProtocol.TYPE_GROUP_JOIN_REQUEST) {
+                put("groupId", groupId)
+                put("token", token)
+                put("userId", me.userId)
+            })
+            repeat(10) {
+                delay(200)
+                val synced = groupDao.getGroupById(groupId)
+                if (synced != null) {
+                    group = synced
+                    return@repeat
+                }
+            }
+        }
+
+        val resolved = group
+            ?: return Result.failure(IllegalArgumentException("Group not found on LAN. Ensure hotspot host is active."))
+
+        if (!resolved.isPublic && resolved.inviteToken != token) {
             return Result.failure(IllegalArgumentException("Invalid or expired invite link"))
         }
-        val currentMembers = group.memberIds().toMutableSet()
+
+        val currentMembers = resolved.memberIds().toMutableSet()
         currentMembers.add(me.userId)
-        val updated = group.copy(memberIdsCsv = currentMembers.joinToString(","))
+        val updated = resolved.copy(memberIdsCsv = currentMembers.joinToString(","))
         groupDao.upsertGroup(updated)
         broadcastGroupSync(updated)
         return Result.success(updated)
+    }
+
+    suspend fun joinPublicGroup(groupId: String): Result<GroupEntity> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        val grp = groupDao.getGroupById(groupId)
+            ?: return Result.failure(IllegalArgumentException("Group not found"))
+        if (!grp.isPublic) {
+            return Result.failure(IllegalStateException("This group is private. Join via invite link."))
+        }
+        val members = grp.memberIds().toMutableSet().apply { add(me.userId) }
+        val updated = grp.copy(memberIdsCsv = members.joinToString(","))
+        groupDao.upsertGroup(updated)
+        broadcastGroupSync(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun toggleGroupPrivacy(groupId: String): Result<GroupEntity> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        val group = groupDao.getGroupById(groupId) ?: return Result.failure(IllegalArgumentException("Group not found"))
+        if (!canManageGroup(me, group)) {
+            return Result.failure(IllegalStateException("Only group admins or owner can change privacy"))
+        }
+        val updated = group.copy(isPublic = !group.isPublic)
+        groupDao.upsertGroup(updated)
+        broadcastGroupSync(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun regenerateGroupInviteLink(groupId: String): Result<GroupEntity> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        val group = groupDao.getGroupById(groupId) ?: return Result.failure(IllegalArgumentException("Group not found"))
+        if (!canManageGroup(me, group)) {
+            return Result.failure(IllegalStateException("Only group admins or owner can change invite link"))
+        }
+        val updated = group.copy(inviteToken = UUID.randomUUID().toString().take(10))
+        groupDao.upsertGroup(updated)
+        broadcastGroupSync(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun muteGroupMember(groupId: String, targetUserId: String, durationMinutes: Long): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        val group = groupDao.getGroupById(groupId) ?: return Result.failure(IllegalArgumentException("Group not found"))
+        if (!canManageGroup(me, group)) {
+            return Result.failure(IllegalStateException("Only admins or owner can mute members"))
+        }
+        if (targetUserId == group.creatorId && !me.isOwner) {
+            return Result.failure(IllegalArgumentException("Cannot mute the group owner"))
+        }
+        val map = group.mutedMap().toMutableMap()
+        if (durationMinutes <= 0L) {
+            map.remove(targetUserId)
+        } else {
+            map[targetUserId] = System.currentTimeMillis() + durationMinutes * 60_000L
+        }
+        val csv = map.entries.joinToString(",") { "${it.key}:${it.value}" }
+        val updated = group.copy(mutedUsersCsv = csv)
+        groupDao.upsertGroup(updated)
+        broadcastGroupSync(updated)
+        return Result.success(Unit)
+    }
+
+    suspend fun changeGroupOwner(groupId: String, newOwnerUserId: String): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        val group = groupDao.getGroupById(groupId) ?: return Result.failure(IllegalArgumentException("Group not found"))
+        if (!me.isOwner && me.userId != group.creatorId) {
+            return Result.failure(IllegalStateException("Only App Owner or current Group Owner can transfer ownership"))
+        }
+        val members = group.memberIds().toMutableSet().apply { add(newOwnerUserId) }
+        val admins = group.adminIds().toMutableSet().apply { add(newOwnerUserId) }
+        val updated = group.copy(
+            creatorId = newOwnerUserId,
+            adminIdsCsv = admins.joinToString(","),
+            memberIdsCsv = members.joinToString(",")
+        )
+        groupDao.upsertGroup(updated)
+        broadcastGroupSync(updated)
+        return Result.success(Unit)
     }
 
     suspend fun updateGroupDp(groupId: String, avatarUri: Uri): Result<Unit> {
@@ -459,8 +724,11 @@ class ChatRepository(
         if (!canManageGroup(me, group)) {
             return Result.failure(IllegalStateException("Only group admins can kick members"))
         }
-        if (targetUserId == me.userId || targetUserId == group.creatorId) {
-            return Result.failure(IllegalArgumentException("Cannot kick the group creator"))
+        if (targetUserId == me.userId) {
+            return Result.failure(IllegalArgumentException("Cannot kick yourself"))
+        }
+        if (targetUserId == group.creatorId && !me.isOwner) {
+            return Result.failure(IllegalArgumentException("Cannot kick the group owner"))
         }
 
         val updatedMembers = group.memberIds().filterNot { it == targetUserId }
@@ -489,7 +757,7 @@ class ChatRepository(
             senderUsername = me.username,
             recipientId = groupId,
             type = MessageType.SYSTEM.name,
-            text = "@${targetUser?.username ?: targetUserId} was removed by admin",
+            text = "@${targetUser?.username ?: targetUserId} was kicked",
             timestamp = System.currentTimeMillis(),
             status = MessageStatus.READ.name,
             isReadByMe = true
@@ -501,11 +769,11 @@ class ChatRepository(
     suspend fun toggleGroupAdmin(groupId: String, targetUserId: String): Result<Unit> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
         val group = groupDao.getGroupById(groupId) ?: return Result.failure(IllegalArgumentException("Group not found"))
-        if (!canManageGroup(me, group)) {
-            return Result.failure(IllegalStateException("Only admins can change roles"))
+        if (!me.isOwner && me.userId != group.creatorId && me.userId !in group.adminIds()) {
+            return Result.failure(IllegalStateException("Only group owner/admins can change roles"))
         }
         val admins = group.adminIds().toMutableSet()
-        if (targetUserId in admins && targetUserId != group.creatorId) {
+        if (targetUserId in admins && (targetUserId != group.creatorId || me.isOwner)) {
             admins.remove(targetUserId)
         } else {
             admins.add(targetUserId)
@@ -519,15 +787,23 @@ class ChatRepository(
     fun canManageGroup(user: UserEntity, group: GroupEntity): Boolean =
         user.isOwner || user.userId in group.adminIds() || user.userId == group.creatorId
 
-    suspend fun setUserBannedByOwner(targetUserId: String, banned: Boolean): Result<Unit> {
+    suspend fun banUserWithDuration(targetUserId: String, durationMs: Long): Result<Unit> {
         val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
         if (!me.isOwner) return Result.failure(IllegalStateException("Unauthorized"))
         if (targetUserId == me.userId) return Result.failure(IllegalArgumentException("Cannot ban this account"))
 
-        userDao.setUserBanned(targetUserId, banned)
+        val banned = durationMs != 0L
+        val expiresAt = when {
+            !banned -> 0L
+            durationMs < 0L -> -1L // permanent
+            else -> System.currentTimeMillis() + durationMs
+        }
+
+        userDao.setUserBan(targetUserId, banned, expiresAt)
         val pkt = LanProtocol.packet(LanProtocol.TYPE_MOD_BAN) {
             put("targetUserId", targetUserId)
             put("isBanned", banned)
+            put("banExpiresAt", expiresAt)
             put("issuedByOwnerId", me.userId)
         }
         lanClient.sendPacket(pkt)
@@ -540,6 +816,22 @@ class ChatRepository(
         prefs.setActiveThemeId(theme.id)
         val pkt = LanProtocol.packet(LanProtocol.TYPE_THEME_SYNC) {
             put("themeId", theme.id)
+            put("customBgBase64", "")
+            put("issuedByOwnerId", me.userId)
+        }
+        lanClient.sendPacket(pkt)
+        return Result.success(Unit)
+    }
+
+    suspend fun setCustomGalleryThemeByOwner(imageUri: Uri): Result<Unit> {
+        val me = currentUser.value ?: return Result.failure(IllegalStateException("Not signed in"))
+        if (!me.isOwner) return Result.failure(IllegalStateException("Unauthorized"))
+        val processed = MediaUtils.savePickedImage(context, imageUri, "theme_bg")
+            ?: return Result.failure(IllegalStateException("Could not load image from Gallery"))
+        prefs.setActiveThemeId(ChatBackgroundTheme.CUSTOM_GALLERY.id, processed.filePath)
+        val pkt = LanProtocol.packet(LanProtocol.TYPE_THEME_SYNC) {
+            put("themeId", ChatBackgroundTheme.CUSTOM_GALLERY.id)
+            put("customBgBase64", processed.base64)
             put("issuedByOwnerId", me.userId)
         }
         lanClient.sendPacket(pkt)
@@ -565,7 +857,7 @@ class ChatRepository(
         lanClient.sendPacket(pkt)
     }
 
-    private fun broadcastChatMessage(msg: MessageEntity, audioBase64: String?) {
+    private fun broadcastChatMessage(msg: MessageEntity, mediaBase64: String?) {
         val pkt = LanProtocol.packet(LanProtocol.TYPE_CHAT_MSG) {
             put("msgId", msg.msgId)
             put("chatId", msg.chatId)
@@ -576,28 +868,57 @@ class ChatRepository(
             put("recipientId", msg.recipientId)
             put("msgType", msg.type)
             put("text", msg.text)
-            put("audioBase64", audioBase64 ?: "")
+            put("audioBase64", if (msg.type == MessageType.VOICE.name) mediaBase64 ?: "" else "")
+            put("videoBase64", if (msg.type == MessageType.VIDEO_EMOJI.name) mediaBase64 ?: "" else "")
             put("durationMs", msg.durationMs)
             put("timestamp", msg.timestamp)
             put("groupInviteId", msg.groupInviteId ?: "")
             put("groupInviteName", msg.groupInviteName ?: "")
             put("groupInviteToken", msg.groupInviteToken ?: "")
+            put("groupSnapshotJson", msg.groupSnapshotJson ?: "")
         }
         lanClient.sendPacket(pkt)
     }
 
+    private fun groupToJson(group: GroupEntity): JSONObject = JSONObject().apply {
+        put("groupId", group.groupId)
+        put("name", group.name)
+        put("avatarBase64", group.avatarBase64 ?: "")
+        put("inviteToken", group.inviteToken)
+        put("creatorId", group.creatorId)
+        put("adminIds", LanProtocol.stringListToJsonArray(group.adminIds()))
+        put("memberIds", LanProtocol.stringListToJsonArray(group.memberIds()))
+        put("isPublic", group.isPublic)
+        put("mutedUsersCsv", group.mutedUsersCsv)
+        put("createdAt", group.createdAt)
+    }
+
+    private suspend fun parseGroupJson(gObj: JSONObject, existing: GroupEntity?): GroupEntity {
+        val gid = gObj.optString("groupId")
+        val b64 = gObj.optString("avatarBase64", "")
+        val avatarPath = if (b64.isNotBlank() && b64 != existing?.avatarBase64) {
+            MediaUtils.saveBase64Avatar(context, b64, "grp_$gid")
+        } else {
+            existing?.avatarPath
+        }
+        return GroupEntity(
+            groupId = gid,
+            name = gObj.optString("name", existing?.name ?: "Group"),
+            avatarPath = avatarPath,
+            avatarBase64 = b64.ifBlank { existing?.avatarBase64 },
+            inviteToken = gObj.optString("inviteToken", existing?.inviteToken ?: ""),
+            creatorId = gObj.optString("creatorId", existing?.creatorId ?: ""),
+            adminIdsCsv = LanProtocol.jsonArrayToStringList(gObj.optJSONArray("adminIds")).joinToString(","),
+            memberIdsCsv = LanProtocol.jsonArrayToStringList(gObj.optJSONArray("memberIds")).joinToString(","),
+            isPublic = gObj.optBoolean("isPublic", existing?.isPublic ?: true),
+            mutedUsersCsv = gObj.optString("mutedUsersCsv", existing?.mutedUsersCsv ?: ""),
+            createdAt = gObj.optLong("createdAt", existing?.createdAt ?: System.currentTimeMillis())
+        )
+    }
+
     private fun broadcastGroupSync(group: GroupEntity) {
         val pkt = LanProtocol.packet(LanProtocol.TYPE_GROUP_SYNC) {
-            put("group", JSONObject().apply {
-                put("groupId", group.groupId)
-                put("name", group.name)
-                put("avatarBase64", group.avatarBase64 ?: "")
-                put("inviteToken", group.inviteToken)
-                put("creatorId", group.creatorId)
-                put("adminIds", LanProtocol.stringListToJsonArray(group.adminIds()))
-                put("memberIds", LanProtocol.stringListToJsonArray(group.memberIds()))
-                put("createdAt", group.createdAt)
-            })
+            put("group", groupToJson(group))
         }
         lanClient.sendPacket(pkt)
     }
@@ -613,12 +934,29 @@ class ChatRepository(
                         val uid = u.optString("userId")
                         if (uid.isBlank()) continue
                         val existing = userDao.getUserById(uid)
+
                         val b64 = u.optString("avatarBase64", "")
                         val avatarPath = if (b64.isNotBlank() && b64 != existing?.avatarBase64) {
                             MediaUtils.saveBase64Avatar(context, b64, "peer_$uid")
                         } else {
                             existing?.avatarPath
                         }
+
+                        val vAvatarB64 = u.optString("videoAvatarBase64", "")
+                        val vAvatarPath = if (vAvatarB64.isNotBlank() && vAvatarB64 != existing?.videoAvatarBase64) {
+                            VideoUtils.saveBase64Video(context, vAvatarB64, "vavatar_${uid}_${vAvatarB64.hashCode()}")
+                        } else {
+                            existing?.videoAvatarPath
+                        }
+
+                        val stickerB64 = u.optString("stickerVideoBase64", "")
+                        val stickerPath = if (stickerB64.isNotBlank() && stickerB64 != existing?.stickerVideoBase64) {
+                            VideoUtils.saveBase64Video(context, stickerB64, "sticker_${uid}_${stickerB64.hashCode()}")
+                        } else {
+                            existing?.stickerVideoPath
+                        }
+
+                        val incomingBadge = u.optString("badgeType", existing?.badgeType ?: TickBadgeType.NONE.name)
                         val merged = UserEntity(
                             userId = uid,
                             email = existing?.email ?: "",
@@ -626,9 +964,15 @@ class ChatRepository(
                             username = u.optString("username", existing?.username ?: uid),
                             avatarPath = avatarPath,
                             avatarBase64 = b64.ifBlank { existing?.avatarBase64 },
+                            videoAvatarPath = vAvatarPath,
+                            videoAvatarBase64 = vAvatarB64.ifBlank { existing?.videoAvatarBase64 },
                             isOwner = existing?.isOwner ?: false,
                             hasBlueTick = u.optBoolean("hasBlueTick", existing?.hasBlueTick ?: false),
+                            badgeType = incomingBadge,
+                            stickerVideoPath = stickerPath,
+                            stickerVideoBase64 = stickerB64.ifBlank { existing?.stickerVideoBase64 },
                             isBanned = u.optBoolean("isBanned", existing?.isBanned ?: false),
+                            banExpiresAt = u.optLong("banExpiresAt", existing?.banExpiresAt ?: 0L),
                             isOnline = u.optBoolean("isOnline", false),
                             lastSeen = System.currentTimeMillis()
                         )
@@ -636,23 +980,56 @@ class ChatRepository(
                     }
                 }
                 val themeId = pkt.optString("themeId")
+                val customBgB64 = pkt.optString("customBgBase64", "")
                 if (themeId.isNotBlank()) {
-                    prefs.setActiveThemeId(themeId)
+                    val savedPath = if (themeId == ChatBackgroundTheme.CUSTOM_GALLERY.id && customBgB64.isNotBlank()) {
+                        MediaUtils.saveBase64Avatar(context, customBgB64, "theme_bg_${customBgB64.hashCode()}")
+                    } else null
+                    prefs.setActiveThemeId(themeId, savedPath)
                 }
             }
 
             LanProtocol.TYPE_THEME_SYNC -> {
                 val themeId = pkt.optString("themeId")
+                val customBgB64 = pkt.optString("customBgBase64", "")
                 if (themeId.isNotBlank()) {
-                    prefs.setActiveThemeId(themeId)
+                    val savedPath = if (themeId == ChatBackgroundTheme.CUSTOM_GALLERY.id && customBgB64.isNotBlank()) {
+                        MediaUtils.saveBase64Avatar(context, customBgB64, "theme_bg_${customBgB64.hashCode()}")
+                    } else null
+                    prefs.setActiveThemeId(themeId, savedPath)
                 }
             }
 
             LanProtocol.TYPE_MOD_BAN -> {
                 val targetId = pkt.optString("targetUserId")
                 val banned = pkt.optBoolean("isBanned", false)
+                val expiresAt = pkt.optLong("banExpiresAt", if (banned) -1L else 0L)
                 if (targetId.isNotBlank()) {
-                    userDao.setUserBanned(targetId, banned)
+                    userDao.setUserBan(targetId, banned, expiresAt)
+                }
+            }
+
+            LanProtocol.TYPE_BADGE_SYNC -> {
+                val targetId = pkt.optString("targetUserId")
+                val badgeType = pkt.optString("badgeType", TickBadgeType.NONE.name)
+                val stickerB64 = pkt.optString("stickerVideoBase64", "")
+                if (targetId.isNotBlank()) {
+                    val existing = userDao.getUserById(targetId)
+                    val stickerPath = if (stickerB64.isNotBlank()) {
+                        VideoUtils.saveBase64Video(context, stickerB64, "sticker_${targetId}_${stickerB64.hashCode()}")
+                    } else existing?.stickerVideoPath
+                    if (existing != null) {
+                        userDao.upsertUser(
+                            existing.copy(
+                                badgeType = badgeType,
+                                hasBlueTick = badgeType == TickBadgeType.BLUE.name,
+                                stickerVideoPath = stickerPath,
+                                stickerVideoBase64 = stickerB64.ifBlank { existing.stickerVideoBase64 }
+                            )
+                        )
+                    } else {
+                        userDao.setUserBadge(targetId, badgeType, badgeType == TickBadgeType.BLUE.name)
+                    }
                 }
             }
 
@@ -661,23 +1038,7 @@ class ChatRepository(
                 val gid = gObj.optString("groupId")
                 if (gid.isBlank()) return
                 val existing = groupDao.getGroupById(gid)
-                val b64 = gObj.optString("avatarBase64", "")
-                val avatarPath = if (b64.isNotBlank() && b64 != existing?.avatarBase64) {
-                    MediaUtils.saveBase64Avatar(context, b64, "grp_$gid")
-                } else {
-                    existing?.avatarPath
-                }
-                val group = GroupEntity(
-                    groupId = gid,
-                    name = gObj.optString("name", "Group"),
-                    avatarPath = avatarPath,
-                    avatarBase64 = b64.ifBlank { existing?.avatarBase64 },
-                    inviteToken = gObj.optString("inviteToken", ""),
-                    creatorId = gObj.optString("creatorId", ""),
-                    adminIdsCsv = LanProtocol.jsonArrayToStringList(gObj.optJSONArray("adminIds")).joinToString(","),
-                    memberIdsCsv = LanProtocol.jsonArrayToStringList(gObj.optJSONArray("memberIds")).joinToString(","),
-                    createdAt = gObj.optLong("createdAt", System.currentTimeMillis())
-                )
+                val group = parseGroupJson(gObj, existing)
                 groupDao.upsertGroup(group)
             }
 
@@ -702,7 +1063,6 @@ class ChatRepository(
                 val fromId = pkt.optString("fromUserId")
                 val fromUsername = pkt.optString("fromUsername")
                 if (me != null && fromId == me.userId) return
-                // For DM, match whether message is intended for me
                 if (!isGroup && me != null && recipientId != me.userId) return
 
                 val state = runCatching {
@@ -727,9 +1087,27 @@ class ChatRepository(
                 val chatId = pkt.optString("chatId")
                 val msgType = pkt.optString("msgType", MessageType.TEXT.name)
                 val audioB64 = pkt.optString("audioBase64", "")
+                val videoB64 = pkt.optString("videoBase64", "")
+
                 val audioPath = if (msgType == MessageType.VOICE.name && audioB64.isNotBlank()) {
                     voiceManager.saveIncomingVoiceBase64(msgId, audioB64)
                 } else null
+
+                val videoPath = if (msgType == MessageType.VIDEO_EMOJI.name && videoB64.isNotBlank()) {
+                    VideoUtils.saveBase64Video(context, videoB64, "vemoji_$msgId")
+                } else null
+
+                // Also sync embedded group snapshot if invite message arrives before GROUP_SYNC
+                val snapStr = pkt.optString("groupSnapshotJson", "")
+                if (msgType == MessageType.GROUP_INVITE.name && snapStr.isNotBlank()) {
+                    runCatching {
+                        val snapObj = JSONObject(snapStr)
+                        val gid = snapObj.optString("groupId")
+                        if (gid.isNotBlank() && groupDao.getGroupById(gid) == null) {
+                            groupDao.upsertGroup(parseGroupJson(snapObj, null))
+                        }
+                    }
+                }
 
                 val isCurrentlyViewing = openChatId == chatId
                 val entity = MessageEntity(
@@ -743,12 +1121,14 @@ class ChatRepository(
                     type = msgType,
                     text = pkt.optString("text", ""),
                     audioPath = audioPath,
+                    videoPath = videoPath,
                     durationMs = pkt.optLong("durationMs", 0L),
                     timestamp = pkt.optLong("timestamp", System.currentTimeMillis()),
                     status = if (isCurrentlyViewing) MessageStatus.READ.name else MessageStatus.DELIVERED.name,
                     groupInviteId = pkt.optString("groupInviteId").ifBlank { null },
                     groupInviteName = pkt.optString("groupInviteName").ifBlank { null },
                     groupInviteToken = pkt.optString("groupInviteToken").ifBlank { null },
+                    groupSnapshotJson = snapStr.ifBlank { null },
                     isReadByMe = isCurrentlyViewing
                 )
                 messageDao.upsertMessage(entity)
@@ -794,8 +1174,12 @@ class ChatRepository(
             displayName = user.displayName,
             username = user.username,
             avatarBase64 = user.avatarBase64,
+            videoAvatarBase64 = user.videoAvatarBase64,
             hasBlueTick = user.hasBlueTick,
+            badgeType = user.badgeType,
+            stickerVideoBase64 = user.stickerVideoBase64,
             isBanned = user.isBanned,
+            banExpiresAt = user.banExpiresAt,
             isOnline = true
         )
 

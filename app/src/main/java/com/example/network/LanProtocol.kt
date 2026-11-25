@@ -18,7 +18,9 @@ object LanProtocol {
     const val TYPE_PRESENCE = "PRESENCE"
     const val TYPE_GROUP_SYNC = "GROUP_SYNC"
     const val TYPE_GROUP_KICK = "GROUP_KICK"
+    const val TYPE_GROUP_JOIN_REQUEST = "GROUP_JOIN_REQUEST"
     const val TYPE_MOD_BAN = "MOD_BAN"
+    const val TYPE_BADGE_SYNC = "BADGE_SYNC"
     const val TYPE_THEME_SYNC = "THEME_SYNC"
     const val TYPE_PING = "PING"
     const val TYPE_PONG = "PONG"
@@ -37,16 +39,24 @@ object LanProtocol {
         displayName: String,
         username: String,
         avatarBase64: String?,
+        videoAvatarBase64: String? = null,
         hasBlueTick: Boolean,
+        badgeType: String = "NONE",
+        stickerVideoBase64: String? = null,
         isBanned: Boolean,
+        banExpiresAt: Long = 0L,
         isOnline: Boolean
     ): JSONObject = JSONObject().apply {
         put("userId", userId)
         put("displayName", displayName)
         put("username", username)
         put("avatarBase64", avatarBase64 ?: "")
+        put("videoAvatarBase64", videoAvatarBase64 ?: "")
         put("hasBlueTick", hasBlueTick)
+        put("badgeType", badgeType)
+        put("stickerVideoBase64", stickerVideoBase64 ?: "")
         put("isBanned", isBanned)
+        put("banExpiresAt", banExpiresAt)
         put("isOnline", isOnline)
         // Owner email and internal owner status are intentionally omitted from LAN broadcasts
     }

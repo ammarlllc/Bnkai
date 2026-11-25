@@ -57,6 +57,7 @@ fun AmmarChatRoot(
     splashDurationSeconds: Int = 15
 ) {
     val activeTheme by viewModel.activeTheme.collectAsStateWithLifecycle()
+    val customThemeImagePath by viewModel.customThemeImagePath.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val allUsers by viewModel.allUsers.collectAsStateWithLifecycle()
@@ -117,9 +118,10 @@ fun AmmarChatRoot(
                         )
                     }
 
-                    currentUser?.isBanned == true -> {
+                    currentUser?.isCurrentlyBanned() == true -> {
                         BannedScreen(
                             username = currentUser?.username ?: "user",
+                            banExpiresAt = currentUser?.banExpiresAt ?: -1L,
                             onSignOut = { viewModel.signOut() }
                         )
                     }
@@ -139,11 +141,17 @@ fun AmmarChatRoot(
                                     theme = activeTheme,
                                     threads = threads,
                                     allUsers = allUsers,
+                                    allGroups = allGroups,
                                     onOpenDm = { peer ->
                                         navController.navigate("chat/false/${peer.userId}")
                                     },
                                     onOpenGroup = { groupId ->
                                         navController.navigate("chat/true/$groupId")
+                                    },
+                                    onJoinPublicGroup = { groupId ->
+                                        viewModel.joinPublicGroup(groupId) { joined ->
+                                            navController.navigate("chat/true/${joined.groupId}")
+                                        }
                                     },
                                     onOpenSettings = {
                                         navController.navigate("settings")
@@ -189,11 +197,13 @@ fun AmmarChatRoot(
                                     currentUser = me,
                                     peerUser = peerUser,
                                     group = group,
+                                    allUsers = allUsers,
                                     myGroups = myGroups,
                                     messages = messages,
                                     presence = presenceMap[chatId],
                                     connectionState = connectionState,
                                     theme = activeTheme,
+                                    customThemeImagePath = customThemeImagePath,
                                     recordingState = recordingState,
                                     playbackState = playbackState,
                                     onBack = { navController.popBackStack() },
@@ -203,6 +213,9 @@ fun AmmarChatRoot(
                                     },
                                     onSendText = { text, onSent ->
                                         viewModel.sendText(chatId, isGroup, recipientId, text, onSent)
+                                    },
+                                    onSendVideoEmoji = { uri ->
+                                        viewModel.sendVideoEmoji(chatId, isGroup, recipientId, uri)
                                     },
                                     onStartVoice = {
                                         viewModel.startVoiceRecording(chatId, isGroup, recipientId)
@@ -218,13 +231,16 @@ fun AmmarChatRoot(
                                     onShareGroupInvite = { grp ->
                                         viewModel.sendGroupInvite(chatId, isGroup, recipientId, grp)
                                     },
-                                    onJoinGroupInvite = { gid, tok ->
-                                        viewModel.joinGroupByInvite(gid, tok) { joined ->
+                                    onJoinGroupInvite = { gid, tok, snap ->
+                                        viewModel.joinGroupByInvite(gid, tok, snap) { joined ->
                                             navController.navigate("chat/true/${joined.groupId}")
                                         }
                                     },
-                                    onOwnerBanToggle = { uid, ban ->
-                                        viewModel.setUserBannedByOwner(uid, ban)
+                                    onOwnerBanWithDuration = { uid, durationMs ->
+                                        viewModel.banUserWithDuration(uid, durationMs)
+                                    },
+                                    onOwnerGrantBadge = { uid, badge ->
+                                        viewModel.setUserBadgeByOwner(uid, badge)
                                     },
                                     onOpenHotspotNode = { viewModel.openHotspotNodeApp() }
                                 )
@@ -248,6 +264,10 @@ fun AmmarChatRoot(
                                         theme = activeTheme,
                                         onBack = { navController.popBackStack() },
                                         onUpdateGroupDp = { uri -> viewModel.updateGroupDp(grp.groupId, uri) },
+                                        onTogglePrivacy = { viewModel.toggleGroupPrivacy(grp.groupId) },
+                                        onRegenerateInviteLink = { viewModel.regenerateGroupInviteLink(grp.groupId) },
+                                        onMuteMember = { uid, mins -> viewModel.muteGroupMember(grp.groupId, uid, mins) },
+                                        onChangeGroupOwner = { newOwnerId -> viewModel.changeGroupOwner(grp.groupId, newOwnerId) },
                                         onKickMember = { targetUid -> viewModel.kickMember(grp.groupId, targetUid) },
                                         onToggleAdmin = { targetUid -> viewModel.toggleGroupAdmin(grp.groupId, targetUid) },
                                         onCopiedLink = { viewModel.showToast("Invite link copied to clipboard") }
@@ -260,10 +280,18 @@ fun AmmarChatRoot(
                                     currentUser = me,
                                     allUsers = allUsers,
                                     activeTheme = activeTheme,
+                                    customThemeImagePath = customThemeImagePath,
                                     onBack = { navController.popBackStack() },
                                     onUpdateAvatar = { uri -> viewModel.updateProfile(me.displayName, uri) },
+                                    onSetVideoAvatar = { uri -> viewModel.setMyVideoAvatar(uri) },
+                                    onSetOwnerBadgeAndSticker = { badge, uri ->
+                                        viewModel.setOwnerBadgeAndSticker(badge, uri)
+                                    },
+                                    onSetUserBadge = { uid, badge -> viewModel.setUserBadgeByOwner(uid, badge) },
                                     onSelectTheme = { t -> viewModel.setThemeByOwner(t) },
-                                    onToggleBan = { uid, ban -> viewModel.setUserBannedByOwner(uid, ban) },
+                                    onRandomTheme = { viewModel.setRandomThemeByOwner() },
+                                    onSelectCustomGalleryTheme = { uri -> viewModel.setCustomGalleryThemeByOwner(uri) },
+                                    onBanWithDuration = { uid, durationMs -> viewModel.banUserWithDuration(uid, durationMs) },
                                     onOpenHotspotNode = { viewModel.openHotspotNodeApp() },
                                     onSignOut = { viewModel.signOut() }
                                 )
@@ -274,8 +302,8 @@ fun AmmarChatRoot(
                             CreateGroupDialog(
                                 theme = activeTheme,
                                 onDismiss = { showCreateGroupDialog = false },
-                                onCreate = { name, uri ->
-                                    viewModel.createGroup(name, uri) { grp ->
+                                onCreate = { name, uri, isPublic ->
+                                    viewModel.createGroup(name, uri, isPublic) { grp ->
                                         showCreateGroupDialog = false
                                         navController.navigate("chat/true/${grp.groupId}")
                                     }

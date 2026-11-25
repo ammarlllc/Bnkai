@@ -2,7 +2,9 @@ package com.example.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -32,14 +34,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Block
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Router
+import androidx.compose.material.icons.rounded.Verified
+import androidx.compose.material.icons.rounded.VideoCall
+import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -74,15 +79,20 @@ import com.example.data.local.GroupEntity
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageType
 import com.example.data.local.PresenceState
+import com.example.data.local.TickBadgeType
 import com.example.data.local.UserEntity
 import com.example.data.repo.PresenceIndicator
 import com.example.network.LanConnectionState
+import com.example.ui.components.GrantTickDialog
 import com.example.ui.components.GroupInviteBubble
 import com.example.ui.components.MessageStatusTicks
 import com.example.ui.components.ThemedChatBackground
+import com.example.ui.components.TimedBanDialog
 import com.example.ui.components.UserAvatar
-import com.example.ui.components.VerifiedBlueTick
+import com.example.ui.components.UserBadgeView
+import com.example.ui.components.VideoEmojiBubble
 import com.example.ui.components.VoiceMessageBubble
+import com.example.ui.components.formatBanRemaining
 import com.example.ui.components.formatClockTime
 import com.example.ui.components.formatDuration
 import com.example.ui.theme.AmberWarn
@@ -102,37 +112,49 @@ fun ChatDetailScreen(
     currentUser: UserEntity,
     peerUser: UserEntity?,
     group: GroupEntity?,
+    allUsers: List<UserEntity>,
     myGroups: List<GroupEntity>,
     messages: List<MessageEntity>,
     presence: PresenceIndicator?,
     connectionState: LanConnectionState,
     theme: ChatBackgroundTheme,
+    customThemeImagePath: String?,
     recordingState: VoiceRecordingState,
     playbackState: VoicePlaybackState,
     onBack: () -> Unit,
     onSetOpenChat: (String?) -> Unit,
     onTextChanged: (String) -> Unit,
     onSendText: (String, () -> Unit) -> Unit,
+    onSendVideoEmoji: (Uri) -> Unit,
     onStartVoice: () -> Unit,
     onStopAndSendVoice: () -> Unit,
     onCancelVoice: () -> Unit,
     onTogglePlayVoice: (MessageEntity) -> Unit,
     onOpenGroupInfo: (String) -> Unit,
     onShareGroupInvite: (GroupEntity) -> Unit,
-    onJoinGroupInvite: (String, String) -> Unit,
-    onOwnerBanToggle: (String, Boolean) -> Unit,
+    onJoinGroupInvite: (String, String, String?) -> Unit,
+    onOwnerBanWithDuration: (String, Long) -> Unit,
+    onOwnerGrantBadge: (String, TickBadgeType) -> Unit,
     onOpenHotspotNode: () -> Unit
 ) {
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var showMenu by remember { mutableStateOf(false) }
     var showShareGroupPicker by remember { mutableStateOf(false) }
+    var showBanDialog by remember { mutableStateOf(false) }
+    var showTickDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) onStartVoice()
+    }
+
+    val videoEmojiPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onSendVideoEmoji(uri)
     }
 
     DisposableEffect(chatId) {
@@ -148,7 +170,11 @@ fun ChatDetailScreen(
 
     val title = if (isGroup) group?.name ?: "Group" else peerUser?.displayName ?: "Chat"
     val avatarPath = if (isGroup) group?.avatarPath else peerUser?.avatarPath
-    val hasBlueTick = !isGroup && (peerUser?.hasBlueTick == true)
+    val videoAvatarPath = if (isGroup) null else peerUser?.videoAvatarPath
+    val peerBadge = if (isGroup) TickBadgeType.NONE else (peerUser?.effectiveBadgeType() ?: TickBadgeType.NONE)
+    val mutedUntil = if (isGroup) group?.mutedUntil(currentUser.userId) ?: 0L else 0L
+    val isMutedInGroup = mutedUntil > System.currentTimeMillis()
+    val canSend = connectionState.isHotspotActive && !isMutedInGroup
 
     val subtitle = when {
         presence != null && presence.state == PresenceState.TYPING ->
@@ -207,7 +233,8 @@ fun ChatDetailScreen(
                             displayName = title,
                             size = 42.dp,
                             isOnline = peerUser?.isOnline == true,
-                            isGroup = isGroup
+                            isGroup = isGroup,
+                            videoAvatarPath = videoAvatarPath
                         )
                         Spacer(Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -219,9 +246,13 @@ fun ChatDetailScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                if (hasBlueTick) {
+                                if (peerBadge != TickBadgeType.NONE) {
                                     Spacer(Modifier.width(5.dp))
-                                    VerifiedBlueTick(size = 15.dp)
+                                    UserBadgeView(
+                                        badgeType = peerBadge,
+                                        stickerVideoPath = peerUser?.stickerVideoPath,
+                                        size = 15.dp
+                                    )
                                 }
                             }
                             Text(
@@ -265,16 +296,24 @@ fun ChatDetailScreen(
                             }
                             if (!isGroup && peerUser != null && currentUser.isOwner) {
                                 DropdownMenuItem(
+                                    text = { Text("Manage Tick Badge", color = EmeraldSignal) },
+                                    leadingIcon = { Icon(Icons.Rounded.Verified, null, tint = EmeraldSignal) },
+                                    onClick = {
+                                        showMenu = false
+                                        showTickDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = {
                                         Text(
-                                            if (peerUser.isBanned) "Unban @${peerUser.username}" else "Ban @${peerUser.username}",
+                                            if (peerUser.isCurrentlyBanned()) "Manage Ban / Unban" else "Ban @${peerUser.username}",
                                             color = CrimsonAlert
                                         )
                                     },
                                     leadingIcon = { Icon(Icons.Rounded.Block, null, tint = CrimsonAlert) },
                                     onClick = {
                                         showMenu = false
-                                        onOwnerBanToggle(peerUser.userId, !peerUser.isBanned)
+                                        showBanDialog = true
                                     }
                                 )
                             }
@@ -291,12 +330,7 @@ fun ChatDetailScreen(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.WifiOff,
-                                contentDescription = null,
-                                tint = AmberWarn,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            Icon(Icons.Rounded.WifiOff, null, tint = AmberWarn, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 text = "Hotspot OFF — Turn on AMMAR-HACKER-5G to send messages",
@@ -309,6 +343,26 @@ fun ChatDetailScreen(
                                 Spacer(Modifier.width(4.dp))
                                 Text("Node", color = theme.accent, fontWeight = FontWeight.Bold)
                             }
+                        }
+                    }
+                }
+
+                AnimatedVisibility(visible = isMutedInGroup) {
+                    Surface(
+                        color = AmberWarn.copy(alpha = 0.16f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.VolumeOff, null, tint = AmberWarn, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "You are muted in this group (${formatBanRemaining(mutedUntil)})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextPrimary
+                            )
                         }
                     }
                 }
@@ -391,6 +445,26 @@ fun ChatDetailScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.Bottom
                     ) {
+                        if (currentUser.canUseVideoFeatures()) {
+                            IconButton(
+                                enabled = canSend,
+                                onClick = {
+                                    videoEmojiPicker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                    )
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("video_emoji_picker_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.VideoCall,
+                                    contentDescription = "Send 3s video emoji",
+                                    tint = if (canSend) theme.accent else TextSecondary
+                                )
+                            }
+                        }
+
                         TextField(
                             value = inputText,
                             onValueChange = {
@@ -399,11 +473,15 @@ fun ChatDetailScreen(
                             },
                             placeholder = {
                                 Text(
-                                    if (connectionState.isHotspotActive) "Message..." else "Hotspot offline...",
+                                    when {
+                                        !connectionState.isHotspotActive -> "Hotspot offline..."
+                                        isMutedInGroup -> "Muted in this group..."
+                                        else -> "Message..."
+                                    },
                                     color = TextSecondary
                                 )
                             },
-                            enabled = connectionState.isHotspotActive,
+                            enabled = canSend,
                             maxLines = 4,
                             shape = RoundedCornerShape(24.dp),
                             colors = TextFieldDefaults.colors(
@@ -429,11 +507,8 @@ fun ChatDetailScreen(
                             modifier = Modifier
                                 .size(50.dp)
                                 .clip(CircleShape)
-                                .background(
-                                    if (connectionState.isHotspotActive) theme.accent
-                                    else ObsidianSurfaceHigh
-                                )
-                                .clickable(enabled = connectionState.isHotspotActive) {
+                                .background(if (canSend) theme.accent else ObsidianSurfaceHigh)
+                                .clickable(enabled = canSend) {
                                     if (hasText) {
                                         val sending = inputText
                                         onSendText(sending) { inputText = "" }
@@ -455,7 +530,7 @@ fun ChatDetailScreen(
                             Icon(
                                 imageVector = if (hasText) Icons.AutoMirrored.Rounded.Send else Icons.Rounded.Mic,
                                 contentDescription = if (hasText) "Send message" else "Record voice message",
-                                tint = if (connectionState.isHotspotActive) Color(0xFF04101A) else TextSecondary
+                                tint = if (canSend) Color(0xFF04101A) else TextSecondary
                             )
                         }
                     }
@@ -468,7 +543,7 @@ fun ChatDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            ThemedChatBackground(theme = theme)
+            ThemedChatBackground(theme = theme, customImagePath = customThemeImagePath)
 
             LazyColumn(
                 state = listState,
@@ -496,6 +571,7 @@ fun ChatDetailScreen(
                         }
                     } else {
                         val isMine = msg.senderId == currentUser.userId
+                        val senderUser = allUsers.firstOrNull { it.userId == msg.senderId }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
@@ -513,16 +589,34 @@ fun ChatDetailScreen(
                             ) {
                                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                     if (isGroup && !isMine) {
-                                        Text(
-                                            text = "${msg.senderName} (@${msg.senderUsername})",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = theme.accent,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "${msg.senderName} (@${msg.senderUsername})",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = theme.accent,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            val senderBadge = senderUser?.effectiveBadgeType() ?: TickBadgeType.NONE
+                                            if (senderBadge != TickBadgeType.NONE) {
+                                                Spacer(Modifier.width(4.dp))
+                                                UserBadgeView(
+                                                    badgeType = senderBadge,
+                                                    stickerVideoPath = senderUser?.stickerVideoPath,
+                                                    size = 13.dp
+                                                )
+                                            }
+                                        }
                                         Spacer(Modifier.height(3.dp))
                                     }
 
                                     when (msg.type) {
+                                        MessageType.VIDEO_EMOJI.name -> {
+                                            VideoEmojiBubble(
+                                                msg = msg,
+                                                isMine = isMine,
+                                                theme = theme
+                                            )
+                                        }
                                         MessageType.VOICE.name -> {
                                             VoiceMessageBubble(
                                                 msg = msg,
@@ -541,7 +635,7 @@ fun ChatDetailScreen(
                                                     val gid = msg.groupInviteId
                                                     val tok = msg.groupInviteToken
                                                     if (!gid.isNullOrBlank() && !tok.isNullOrBlank()) {
-                                                        onJoinGroupInvite(gid, tok)
+                                                        onJoinGroupInvite(gid, tok, msg.groupSnapshotJson)
                                                     }
                                                 }
                                             )
@@ -579,7 +673,7 @@ fun ChatDetailScreen(
     }
 
     if (showShareGroupPicker) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { showShareGroupPicker = false },
             containerColor = ObsidianSurface,
             title = { Text("Share Group Invite Link", color = TextPrimary) },
@@ -613,6 +707,23 @@ fun ChatDetailScreen(
                     Text("Close", color = theme.accent)
                 }
             }
+        )
+    }
+
+    if (showBanDialog && peerUser != null) {
+        TimedBanDialog(
+            targetUser = peerUser,
+            onDismiss = { showBanDialog = false },
+            onSelectDuration = { durationMs -> onOwnerBanWithDuration(peerUser.userId, durationMs) }
+        )
+    }
+
+    if (showTickDialog && peerUser != null) {
+        GrantTickDialog(
+            targetUser = peerUser,
+            theme = theme,
+            onDismiss = { showTickDialog = false },
+            onSelectBadge = { badge -> onOwnerGrantBadge(peerUser.userId, badge) }
         )
     }
 }

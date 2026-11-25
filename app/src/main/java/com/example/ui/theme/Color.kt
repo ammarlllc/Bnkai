@@ -14,6 +14,8 @@ val EmeraldSignal = Color(0xFF10B981)
 val AmberWarn = Color(0xFFF59E0B)
 val CrimsonAlert = Color(0xFFEF4444)
 val VerifiedBlue = Color(0xFF2AABEE)
+val VerifiedGreen = Color(0xFF22C55E)
+val VerifiedRed = Color(0xFFEF4444)
 
 val TextPrimary = Color(0xFFF1F5F9)
 val TextSecondary = Color(0xFF94A3B8)
@@ -25,63 +27,94 @@ enum class ChatBackgroundTheme(
     val bgTop: Color,
     val bgBottom: Color,
     val patternColor: Color,
+    val secondaryGlow: Color,
     val outgoingBubble: Color,
     val incomingBubble: Color,
     val accent: Color
 ) {
-    OBSIDIAN_CYBER(
-        id = "obsidian_cyber",
-        label = "Obsidian Cyber",
+    SPIDY(
+        id = "spidy",
+        label = "Spidy 3D",
+        bgTop = Color(0xFF140711),
+        bgBottom = Color(0xFF0B1430),
+        patternColor = Color(0xFFFF2E63),
+        secondaryGlow = Color(0xFF3B82F6),
+        outgoingBubble = Color(0xFF7B1638),
+        incomingBubble = Color(0xFF172042),
+        accent = Color(0xFFFF3B6B)
+    ),
+    GOJO(
+        id = "gojo",
+        label = "Gojo Void 3D",
+        bgTop = Color(0xFF07091D),
+        bgBottom = Color(0xFF170B3B),
+        patternColor = Color(0xFF38BDF8),
+        secondaryGlow = Color(0xFFA855F7),
+        outgoingBubble = Color(0xFF2C2773),
+        incomingBubble = Color(0xFF14183B),
+        accent = Color(0xFF60A5FA)
+    ),
+    SUKUNA(
+        id = "sukuna",
+        label = "Sukuna Shrine 3D",
+        bgTop = Color(0xFF160408),
+        bgBottom = Color(0xFF2B070E),
+        patternColor = Color(0xFFEF4444),
+        secondaryGlow = Color(0xFFF97316),
+        outgoingBubble = Color(0xFF7A1220),
+        incomingBubble = Color(0xFF291016),
+        accent = Color(0xFFFF4D5A)
+    ),
+    HACKER(
+        id = "hacker",
+        label = "Hacker 3D",
+        bgTop = Color(0xFF03100B),
+        bgBottom = Color(0xFF061E16),
+        patternColor = Color(0xFF00FF9C),
+        secondaryGlow = Color(0xFF00E5FF),
+        outgoingBubble = Color(0xFF0D5940),
+        incomingBubble = Color(0xFF0D241C),
+        accent = Color(0xFF00FF9C)
+    ),
+    MAKIMA(
+        id = "makima",
+        label = "Makima 3D",
+        bgTop = Color(0xFF17080C),
+        bgBottom = Color(0xFF241118),
+        patternColor = Color(0xFFF59E0B),
+        secondaryGlow = Color(0xFFE11D48),
+        outgoingBubble = Color(0xFF6E2133),
+        incomingBubble = Color(0xFF26151C),
+        accent = Color(0xFFFBBF24)
+    ),
+    YUTA(
+        id = "yuta",
+        label = "Yuta Rika 3D",
+        bgTop = Color(0xFF08091C),
+        bgBottom = Color(0xFF1B1033),
+        patternColor = Color(0xFF22D3EE),
+        secondaryGlow = Color(0xFFF472B6),
+        outgoingBubble = Color(0xFF2D2E75),
+        incomingBubble = Color(0xFF181938),
+        accent = Color(0xFF22D3EE)
+    ),
+    CUSTOM_GALLERY(
+        id = "custom_gallery",
+        label = "Gallery Theme",
         bgTop = Color(0xFF070B14),
         bgBottom = Color(0xFF0D1729),
         patternColor = Color(0xFF00E5FF),
+        secondaryGlow = Color(0xFF3B82F6),
         outgoingBubble = Color(0xFF134E6F),
         incomingBubble = Color(0xFF151F33),
         accent = Color(0xFF00E5FF)
-    ),
-    MIDNIGHT_AURORA(
-        id = "midnight_aurora",
-        label = "Midnight Aurora",
-        bgTop = Color(0xFF09081A),
-        bgBottom = Color(0xFF151238),
-        patternColor = Color(0xFF38BDF8),
-        outgoingBubble = Color(0xFF2B3A8C),
-        incomingBubble = Color(0xFF181936),
-        accent = Color(0xFF60A5FA)
-    ),
-    EMERALD_MATRIX(
-        id = "emerald_matrix",
-        label = "Emerald Matrix",
-        bgTop = Color(0xFF04120E),
-        bgBottom = Color(0xFF08241C),
-        patternColor = Color(0xFF10B981),
-        outgoingBubble = Color(0xFF0E5A44),
-        incomingBubble = Color(0xFF102A22),
-        accent = Color(0xFF34D399)
-    ),
-    CRIMSON_STEALTH(
-        id = "crimson_stealth",
-        label = "Crimson Stealth",
-        bgTop = Color(0xFF12070B),
-        bgBottom = Color(0xFF220C14),
-        patternColor = Color(0xFFF43F5E),
-        outgoingBubble = Color(0xFF6D1D33),
-        incomingBubble = Color(0xFF26121A),
-        accent = Color(0xFFFB7185)
-    ),
-    DEEP_OCEAN(
-        id = "deep_ocean",
-        label = "Deep Ocean",
-        bgTop = Color(0xFF04111D),
-        bgBottom = Color(0xFF0A243B),
-        patternColor = Color(0xFF22D3EE),
-        outgoingBubble = Color(0xFF0E5377),
-        incomingBubble = Color(0xFF10283E),
-        accent = Color(0xFF22D3EE)
     );
 
     companion object {
+        val animatedPresets: List<ChatBackgroundTheme> =
+            listOf(SPIDY, GOJO, SUKUNA, HACKER, MAKIMA, YUTA)
+
         fun fromId(id: String?): ChatBackgroundTheme =
-            entries.firstOrNull { it.id == id } ?: OBSIDIAN_CYBER
+            entries.firstOrNull { it.id == id } ?: HACKER
     }
 }
